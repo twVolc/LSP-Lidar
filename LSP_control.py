@@ -5,6 +5,7 @@ import threading
 import sys
 import time
 import numpy as np
+import scipy.io as sci
 
 class SocketLSP:
     """Classs to interface with LSP -> send + recieve data -> parse data to useful output"""
@@ -13,7 +14,9 @@ class SocketLSP:
         self.hostIP = hostIP
         self.lspIP = lspIP
 
+        self.current_mess_byte = b''                # Byte current message
         self.current_mess = ''                      # Holds any incomplete message
+        self.scan_message = None                    # Will hold a scan binary message
         self.message_incomplete = False             # Used to check if we need to receive more data
 
         # Define important LSP-HD paramters
@@ -98,8 +101,10 @@ class SocketLSP:
                     print('LSP-HD error code: %i' % return_code)
                 return return_code
 
-    def recv_bin_data(self, mess=b''):
+    def recv_bin_data(self):
         """Receive binary message"""
+        mess = self.current_mess_byte
+
         # Receive data until we have a full header
         mess_current_length = len(mess)
         while mess_current_length < self.bin_header_size:
@@ -126,9 +131,15 @@ class SocketLSP:
 
         if mess_current_length > mess_len_total:
             print('Warning! More bytes received than expected')     # Warning if we have too much data
+            # If we have more data than a single message, extract the single scan and add rest of data to 'message'
+            self.current_mess_byte = mess[mess_len_total:]
+            complete_scan = mess[:mess_len_total]
+            # Otherwise the complete scan is just equal to the whole message
+        else:
+            complete_scan = mess
+            self.current_mess_byte = b''
 
-        return mess, [mess_current_length, mess_len_total]  # Return message and its length and expected length
-
+        self.scan_message = complete_scan
 
     def recv_resp(self):
         """Receive repsonse from LSP-HD"""
@@ -167,6 +178,8 @@ class SocketLSP:
             #         print('Returning message and all messages are complete')
             #         return mess                 # Return the message
             if end_idx != -1:
+                # Only one message at a time should ever be sent, so there will never be a need to split the messages
+                # into more than one message. Therefore we can just return the message.
                 return total_message[:end_idx]
             else:
                 self.current_mess = total_message
@@ -204,13 +217,80 @@ class SocketLSP:
         # Maybe do more with this function, or perhaps just do these basics, and let further processing be done once the response type is known
         return mess_type, mess_list
 
-    def parse_mess_bin(self, mess):
+    def parse_mess_bin(self):
         """Parse LSP message -> message must be from the binary data option"""
-        unpacked_mess = self.bin_unpacker.unpack(mess)      # Unpack message data
+        unpacked_mess = self.bin_unpacker.unpack(self.scan_message)      # Unpack message data
         len_mess = unpacked_mess[3]                         # Length of message as defined within the message
-        if len_mess != len(mess):
-            print('Warning!!! Expected message of length %i bytes but got message of %i bytes' % (len_mess, len(mess)))
+        if len_mess != len(self.scan_message):
+            print('Warning!!! Expected message of length %i bytes but got message of %i bytes' % (len_mess, len(self.scan_message)))
         return unpacked_mess
+
+class LSPInfo:
+    """Used by recv_bin_data()
+    Should be able to inherit this in SocketLSP to save writing things twice?"""
+    port = 1050  # LSP-HD listening port
+
+    current_mess_byte = b''  # Byte current message
+    current_mess = ''  # Holds any incomplete message
+    scan_message = None  # Will hold a scan binary message
+    message_incomplete = False  # Used to check if we need to receive more data
+
+    # Define important LSP-HD paramters
+    reconnect_delay = 6  # Allow 6 seconds before attempting reconnect
+    end_mess = '\r\x00'  # End of message bytes (<CR><NULL>)
+    end_mess_bytes = b'\r\0'  # End of message bytes (<CR><NULL>)
+    end_mess_len = len(end_mess)  # Length of end message, for extracting string in message
+    good_resp = b'RUP 0' + end_mess_bytes  # Reply code when all is good
+
+    # Define binary format string. Whitespace is ignored in format specifiers, but is included for clarity
+    encoding = 'utf-8'  # Encoding of ascii messages
+    bin_header_size = 7  # Data needed for header info
+    fmt_header = '=3c H h'  # HEader format
+    fmt_bin = '=3c H h 6H h 6h 6H 6h f 3H 29h 8f 43h 1000h 2c'  # Binary data format
+    bin_unpacker = struct.Struct(fmt_bin)  # Create structure from format string
+    bin_data_len = struct.calcsize(fmt_bin)  # How much data is expected from scan
+
+
+def recv_bin_data(sock):
+    """Receive binary message - function rather than class  - for multiprocessing"""
+    mess = b''
+
+    # Receive data until we have a full header
+    mess_current_length = len(mess)
+    while mess_current_length < LSPInfo.bin_header_size:
+        mess += sock.recv(LSPInfo.bin_header_size)  # Receive the header
+        mess_current_length = len(mess)  # Current length of the message
+
+    # Check error code in header
+    header = struct.unpack(LSPInfo.fmt_header, mess)
+    error_code = header[-1]
+    # If bad error code, close socket and return
+    if error_code != 0:
+        print('LSP providing error code of %i. Communication terminated!' % i)
+        sock.close()
+        return
+
+    # If error code is good, find size of message
+    mess_len_total = header[-2]
+
+    # Loop to receive bytes until we have the entire message
+    while mess_current_length < mess_len_total:
+        bytes_left = mess_len_total - mess_current_length  # How many more bytes need to be received
+        mess += sock.recv(bytes_left)  # Try to receive those bytes
+        mess_current_length = len(mess)  # Current length of the message
+
+    if mess_current_length > mess_len_total:
+        print('Warning! More bytes received than expected')  # Warning if we have too much data
+        # If we have more data than a single message, extract the single scan and add rest of data to 'message'
+        complete_scan = mess[:mess_len_total]
+    # Otherwise the complete scan is just equal to the whole message
+    else:
+        complete_scan = mess
+
+    unpacked_mess = LSPInfo.bin_unpacker.unpack(complete_scan)  # Unpack message data
+
+    return unpacked_mess
+
 
 class ProcessLSP:
     """Class for processing LSP data"""
@@ -230,14 +310,21 @@ class ProcessLSP:
         scan_speed = mess[self.scan_speed_idx]
         return scan_speed
 
-    def save_scan(self, filename, mess):
+    def save_scan(self, filename, data_array):
         with open(filename, 'wb') as f:
-            f.write(mess)
+            f.write(data_array)
         print('Data saved!!')
 
     def read_array(self, filename):
         """Read in the numpy temperature file and return array"""
-        array = np.load(filename)
+        extension = filename.split('.')[-1]     # Get file extension
+        if extension == 'mat':
+            array = sci.loadmat(filename)
+        elif extension == 'npy':
+            array = np.load(filename)
+        else:
+            print('Error!!! Unrecognised file type for read_array()')
+            array = None
         return array
 
 if __name__ == "__main__":
@@ -255,7 +342,8 @@ if __name__ == "__main__":
     lsp_comms.req_scan_bin()
     message = lsp_comms.recv_resp_simple(5000)
     print(message)
-    unpacked_mess = lsp_comms.parse_mess_bin(message)
+    lsp_comms.scan_message = message
+    unpacked_mess = lsp_comms.parse_mess_bin()
     print(unpacked_mess)
 
     extracted_temp = lsp_processor.extract_temp_bin(unpacked_mess)
@@ -280,17 +368,9 @@ if __name__ == "__main__":
     message = b''      # Originally set message to empty byte string
     for i in range(num_scans):
         # print('Receiving message %i' % i)
-        all_message, mess_info = lsp_comms.recv_bin_data(message)   # Receive data
+        lsp_comms.recv_bin_data()   # Receive data
 
-        # If we have more data than a single message, extract the single scan and add rest of data to 'message'
-        if mess_info[0] != mess_info[1]:
-            message = all_message[mess_info[0]:]
-            complete_scan = all_message[:mess_info[0]]
-        # Otherwise the complete scan is just equal to the whole message
-        else:
-            complete_scan = all_message
-
-        print(complete_scan)
+        print(lsp_comms.scan_message)
 
     # Elapsed time
     print('Elapsed time for %i scans: %.2f' % (num_scans, time.time()-start_time))
@@ -303,5 +383,3 @@ if __name__ == "__main__":
         print('All worked well. Closing socket.')
     lsp_comms.close_socket()
     # ============================================
-
-    # lsp.close_socket()

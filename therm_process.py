@@ -29,22 +29,14 @@ start_time = time.time()
 message = b''      # Originally set message to empty byte string
 for i in range(num_scans):
     print('Receiving message %i' % i)
-    all_message, mess_info = lsp_comms.recv_bin_data(message)   # Receive data
-
-    # If we have more data than a single message, extract the single scan and add rest of data to 'message'
-    if mess_info[0] != mess_info[1]:
-        message = all_message[mess_info[0]:]
-        complete_scan = all_message[:mess_info[0]]
-    # Otherwise the complete scan is just equal to the whole message
-    else:
-        complete_scan = all_message
+    lsp_comms.recv_bin_data()   # Receive data
 
     # Unpack scan and then extract temperatures
-    unpacked_data = lsp_comms.parse_mess_bin(complete_scan)
+    unpacked_data = lsp_comms.parse_mess_bin()
     temperatures[i, :] = lsp_processor.extract_temp_bin(unpacked_data)
     scan_speeds[i] = lsp_processor.extract_scan_speed(unpacked_data)
 
-    print(complete_scan)
+    print(lsp_comms.scan_message)
     print(lsp_processor.extract_scan_speed(unpacked_data))
 
 # Elapsed time

@@ -3,9 +3,12 @@
 
 import socket
 import os
-from queue import Queue, Empty
+from queue import Empty
 from threading import Thread
+from multiprocessing import Process, Queue
 import struct
+import time
+import numpy as np
 
 
 class Instruments:
@@ -15,13 +18,47 @@ class Instruments:
     SERVER_LSP = 1
 
     LSP_FMT = None
-    LIDAR_FMT = '=H I B'        # Format for lidar data: distance (unsigned short), angle (float), quality (byte)
+    # LIDAR_FMT = '=H I B 2c'   # Format for lidar data: distance (unsigned short), angle (float), quality (byte)
+    LIDAR_FMT = 'H I B'         # Format for lidar data: distance (unsigned short), angle (float), quality (byte)
+    LIDAR_DIST_IDX = 0          # Index position for location of distance
+    LIDAR_ANGLE_IDX = 1         # Index position for location of angle
+    LIDAR_QUAL_IDX = 2          # Index position for location of quality
     LIDAR_FLOAT_SCALE = 1e6     # Value by which the float has been scaled
+    NUM_LIDAR_PTS = 3           # Number of items for each lidar set of data (i.e. distance, angle, quality)
 
+
+def recv_data(_q, fmt, float_idxs, num_pts_recv):
+    """Receive LSP data stream -
+    function is not a class method for SocketServ because of issues with multiprocessing/pickling - it didn't like it!"""
+    fmt_full = '=' + (num_pts_recv * (fmt + ' '))
+    unpacker = struct.Struct(fmt_full)  # Size of message to be expected
+    size_mess = struct.calcsize(fmt_full)  # Size of message to be expected
+    print('Receiving messages of size: %i' % size_mess)
+    data_stream = b''   # Empty message
+    conn = _q.get()     # Wait for connection to be put in queue
+    while 1:
+        # Receive data until we exceed expected message size
+        # Chances are I'm not correctly restarting te data stream so I'm looping through printing the same thing?
+        bytes_left = size_mess
+        while bytes_left != 0:
+            data_stream += conn.recv(bytes_left)
+            bytes_left = size_mess - len(data_stream)
+
+        # Unpack message and put it in the queue
+        message_unpacked = np.array(unpacker.unpack(data_stream), dtype=np.float32)
+        message_unpacked[float_idxs] /= Instruments.LIDAR_FLOAT_SCALE  # Convert back to float
+        _q.put(message_unpacked)
+        data_stream = b''
 
 class SocketServ:
     """Server for local machine communications with programs acquiring data from Lidar and/or LSP"""
     def __init__(self, instrument, host='localhost'):
+        self.num_pts_recv = 1           # Number of lidar datasets to receive and package in one go
+        # Calculate indices where lidar angles (floats) are located, for converting back to float later
+        self.float_idxs = np.arange(Instruments.LIDAR_ANGLE_IDX, Instruments.NUM_LIDAR_PTS * self.num_pts_recv,
+                                    Instruments.NUM_LIDAR_PTS)
+
+        self._queue = Queue()  # Instantiate Queue object
         self.host = host
         self.conn = None        # Connection
         self.addr = None        # Address of connection
@@ -48,16 +85,19 @@ class SocketServ:
         # Save port name
         self.save_port()
 
-        # Listen for a connection and accept it if it comes in
-        self.get_connection()
+        # Listen for a connection and accept if it comes in - threaded so that we don't pause listening for connection
+        self._t_conn = Thread(target=self.get_connection, args=())
+        self._t_conn.daemon = True
+        self._t_conn.start()
 
-        # Once it has a connection, start receiving data in thread
-        self._queue = Queue()       # Instantiate Queue object
-
+        # Start receive thread
         if self.instrument == Instruments.SERVER_LSP:
             self._t = Thread(target=self.recv_data, args=(self._queue, Instruments.LSP_FMT,))
         elif self.instrument == Instruments.SERVER_LIDAR:
             self._t = Thread(target=self.recv_data, args=(self._queue, Instruments.LIDAR_FMT,))
+            # self._t = Process(target=recv_data, args=(self._queue, Instruments.LIDAR_FMT,
+            #                                           self.float_idxs, self.num_pts_recv,))  # Multiprocessing attempt
+
         self._t.daemon = True       # Set daemon so it is killed on exit
         self._t.start()
 
@@ -118,77 +158,48 @@ class SocketServ:
         # Accept connection
         self.conn, self.addr = self.sock.accept()
         print('Got connection from %s' % self.addr[0])
+        self._queue.put(self.conn)
 
     def recv_data(self, _q, fmt):
         """Receive LSP data stream"""
-        unpacker = struct.Struct(fmt)       # Size of message to be expected
-        size_mess = struct.calcsize(fmt)    # Size of message to be expected
-        print(size_mess)
-        data_stream = b''  # Empty message
+        fmt_full = self.__gen_fmt_str__(fmt)
+        unpacker = struct.Struct(fmt_full)  # Size of message to be expected
+        size_mess = struct.calcsize(fmt_full)  # Size of message to be expected
+        print('Receiving messages of size: %i' % size_mess)
+        data_stream = b''       # Empty message
+        self.conn = _q.get()    # Get connection when it has been made
         while 1:
             # Receive data until we exceed expected message size
-            while len(data_stream) < size_mess:
-                data_stream += self.conn.recv(size_mess)
-
-            # Split received data to extract message
-            message = data_stream[0:size_mess]
-
-            # Any additional bytes are put back into data stream
-            data_stream = message[size_mess:]
+            # Chances are I'm not correctly restarting te data stream so I'm looping through printing the same thing?
+            bytes_left = size_mess
+            while bytes_left != 0:
+                data_stream += self.conn.recv(bytes_left)
+                bytes_left = size_mess - len(data_stream)
 
             # Unpack message and put it in the queue
-            message_unpacked = list(unpacker.unpack(message))
-            message_unpacked[1] /= Instruments.LIDAR_FLOAT_SCALE   # Convert back to float
+            message_unpacked = np.array(unpacker.unpack(data_stream), dtype=np.float32)
+            message_unpacked[self.float_idxs] /= Instruments.LIDAR_FLOAT_SCALE  # Convert back to float
             _q.put(message_unpacked)
+            data_stream = b''
+
+    def __gen_fmt_str__(self, fmt):
+        """Generate format string for struct unpacking
+        May be obsolete now that recv_data has been moved outside of class"""
+        return '=' + (self.num_pts_recv * (fmt + ' '))
+
 
     def get_data(self):
-        """Pulls data from the queue and returns it"""
-        data = self._queue.get()
+        """Pulls data from the queue and returns it
+        Queue is non-blocking so that if there is no data we return None"""
+        try:
+            data = self._queue.get(block=False)
+        except Empty:
+            data = None
         return data
 
 
-# '''External class - possibly take ideas from this'''
-# class NonBlockingStreamReader:
-#
-#     def __init__(self, stream):
-#         '''
-#         stream: the stream to read from.
-#                 Usually a process' stdout or stderr.
-#         '''
-#
-#         self._s = stream
-#         self._q = Queue()
-#
-#         def _populateQueue(stream, queue):
-#             '''
-#             Collect lines from 'stream' and put them in 'quque'.
-#             '''
-#
-#             while True:
-#                 line = stream.readline()
-#                 if line:
-#                     queue.put(line)
-#                 else:
-#                     raise UnexpectedEndOfStream
-#
-#         self._t = Thread(target = _populateQueue,
-#                 args = (self._s, self._q))
-#         self._t.daemon = True
-#         self._t.start() #start collecting lines from the stream
-#
-#     def readline(self, timeout = None):
-#         try:
-#             return self._q.get(block = timeout is not None,
-#                     timeout = timeout)
-#         except Empty:
-#             return None
-#
-#
-# class UnexpectedEndOfStream(Exception):
-#     pass
-
-
 if __name__ == '__main__':
-    serv_LSP = SocketServ(Instruments.SERVER_LIDAR)
+    serv_Lidar = SocketServ(Instruments.SERVER_LIDAR)
     while 1:
-        print(serv_LSP.get_data())
+        time.sleep(10)
+        print(serv_Lidar.get_data())

@@ -33,7 +33,6 @@ sep_scans = process_lidar.split_scans()
 print(sep_scans[7]["quality"])
 print(sep_scans[7]["angle"])
 
-
 temps_file = 'C:\\Users\\tw9616\\Documents\\PhD\\EE Placement\\LSP-HD\\Data\\2018-01-31\\2018-01-31_105447_temperatures.npy'
 speed_file = 'C:\\Users\\tw9616\\Documents\\PhD\\EE Placement\\LSP-HD\\Data\\2018-01-31\\2018-01-31_105447_speeds.npy'
 lsp_process = ProcessLSP()
@@ -55,3 +54,4 @@ ax_2.plot(temperatures[:, 500])
 ax_2.set_ylabel('Temperature [oC]')
 ax_2.set_xlabel('Scan position')
 plt.show()
+
