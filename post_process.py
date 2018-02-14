@@ -4,18 +4,25 @@ import matplotlib.pyplot as plt
 import os
 from data_handler import ArrayInfo
 import numpy as np
+from scipy import interpolate
 import sys
 
 
 class ProcessInfo:
-    """Contains properties used in post-processing data"""
-    LIDAR_LSP_DIST = 0.11   # Distance between Lidar and LSP acquisition positions (metres)
+    """Contains properties used in post-processing data
+    -> User may need to change these properties"""
+    LIDAR_LSP_DIST = 0.11       # Distance between Lidar and LSP acquisition positions (metres)
+    INSTRUMENT_SPEED = 0.05     # Speed of movement (m/s)
+    INSTRUMENT_DIRECTION = 1    # Scan direction (LSP first=1, Lidar first=-1)
+    SHIFT_SCANS = True          # Boolean for whether or not we apply the movement shift (True is generally required)
 
     # Define array to hold all of the data
     NUM_Z_DIM = 3           # Number of z-dimensions (Currently: Temperature/Distance/Angle)
     TEMP_IDX = 0            # Index for z dimension where temperature information is stored
     DIST_IDX = 1            # Index for z dimension where distance information is stored
     ANGLE_IDX = 2           # Index for z dimension where angle information is stored
+
+    LIDAR_PADDING = 0       # Padding of lidar distance data (sets values around a measurement to the same value). Used because LSP angular resolution is much higher than lidar
 
     # Generate 1D array holding angles of LSP data points
     _range_lsp_angle = 80                   # Range of angles measured by LSP
@@ -26,23 +33,32 @@ class ProcessInfo:
 
     # Define method of interpolation for lidar measurements
     # Time interpolation takes data from lidar and spreads it evenly across contemporaneous LSP scan, regardless of scan angle
-    # Angle interpolation matches angles on lidar to angles on LSP
+    # Angle interpolation matches angles on lidar to angles on LSP (Angle is recommended - Time may be a stupid idea)
     TIME_INTERP = False         # User can change this value (True/False)
     if not TIME_INTERP:
         ANGLE_INTERP = True
     else:
         ANGLE_INTERP = False
+    INTERP_METHOD = 'cubic'     # Method of interpolation for 2d_interp()
 
 
-def interpolate_data(lidar_data, temps_dist):
+def process_data(lidar_data, temps_dist, scan_speeds):
+    """Main processing function
+    -> Positions lidar data in main array
+    -> Interpolates lidar data such that every temperature point has an associated distance
+    -> Returns processed array"""
+    movement_speed = ProcessInfo.INSTRUMENT_SPEED       # Will want to change this assignement when we stream speed
+    corr_scan = None    # Just intialising variable which needs to exists in first main loop - correct scan index
+
     EMPTY_LID_FLAG = np.zeros([ArrayInfo.NUM_SCANS])    # Array holding flags if lidar data is empty for that scan
     lid_scan_size = lidar_data.shape[1]                 # Number of elements avaailable for lidar data per LSP scan
     distance_idxs = np.arange(Instruments.LIDAR_DIST_IDX, lid_scan_size, Instruments.NUM_LIDAR_PTS)     # Indices for extraction of all distance data points per scan line
     angle_idxs = np.arange(Instruments.LIDAR_ANGLE_IDX, lid_scan_size, Instruments.NUM_LIDAR_PTS)       # As above
     quality_idxs = np.arange(Instruments.LIDAR_QUAL_IDX, lid_scan_size, Instruments.NUM_LIDAR_PTS)      # As above
 
+    pad = ProcessInfo.LIDAR_PADDING     # Set padding for lidar data
     # -----------------------------------------------------------------------------------------------------------------
-    # First iterations, find where lidar data is and put it into array with indices corresponding to a temperature
+    # First iterations - find where lidar data is and put it into array with indices corresponding to a temperature
     for scan in range(ArrayInfo.NUM_SCANS):
         print('Processing scan %i of %i' % (scan + 1, ArrayInfo.NUM_SCANS))
         # Iterate through the scans assigning a distance and angle to each temperature measurement
@@ -68,8 +84,22 @@ def interpolate_data(lidar_data, temps_dist):
             EMPTY_LID_FLAG[scan] = 1    # Flag that we have no data for this scan
             continue
         else:
+            # Calculate what scan line the lidar data needs to be placed on - shift dependent on movement/scan speed etc
+            # Only done if SHIFT_SCANS flag is True, otherwise process data without shifting scans
+            if ProcessInfo.SHIFT_SCANS:
+                prev_scan = corr_scan
+                corr_scan = scan_shift(scan_speeds, scan, movement_speed)
+                if corr_scan is None:
+                    continue        # If function returns None - no match for LSP line, we continue
+            else:
+                corr_scan = scan    # Just use scan index
+                prev_scan = -1      # Set as dummy so we don't edit corr scan later on
 
+            # PLACING LIDAR DATA IN ARRAY > DEPENDENT ON REQUESTED METHOD
             if ProcessInfo.TIME_INTERP:
+                if corr_scan == prev_scan:
+                    corr_scan += 1          # Correct the scan to next line if we have already used line
+
                 # Find how to spread lidar data points across scan
                 spread_dat = int(np.floor(ArrayInfo.len_lsp / (num_dat + 1)))
 
@@ -78,8 +108,8 @@ def interpolate_data(lidar_data, temps_dist):
                         EMPTY_LID_FLAG[scan] = 1  # Flag that we have no data for this scan
                         continue  # Ignore measurements outside of the FOV of the LSP
                     idx = (i + 1) * spread_dat                                  # Index for placing value
-                    temps_dist[scan, idx, ProcessInfo.DIST_IDX] = distances[i]  # Assign distance value
-                    temps_dist[scan, idx, ProcessInfo.ANGLE_IDX] = angles[i]    # Assign angle value
+                    temps_dist[corr_scan, idx, ProcessInfo.DIST_IDX] = distances[i]  # Assign distance value
+                    temps_dist[corr_scan, idx, ProcessInfo.ANGLE_IDX] = angles[i]    # Assign angle value
 
             elif ProcessInfo.ANGLE_INTERP:
                 # Loop through angles and assign data to the specific angle it corresponds to in the LSP scan
@@ -94,142 +124,130 @@ def interpolate_data(lidar_data, temps_dist):
                     # Done because the angular resolution of the LSP far exceeds that of the lidar
                     # Values at edge of FOV are padded differently (don't need to have specific assignments for upper
                     # indices of array because over assignment of indices just gets ignored in python
-                    if idx == 0:
-                        temps_dist[scan, idx:idx+3, ProcessInfo.DIST_IDX] = distances[i]    # Assign distance value
-                        temps_dist[scan, idx:idx+3, ProcessInfo.ANGLE_IDX] = angles[i]      # Assign angle value
-                    elif idx == 1:
-                        temps_dist[scan, idx - 1:idx + 3, ProcessInfo.DIST_IDX] = distances[i]  # Assign distance value
-                        temps_dist[scan, idx - 1:idx + 3, ProcessInfo.ANGLE_IDX] = angles[i]    # Assign angle value
+                    if idx < pad:
+                        temps_dist[corr_scan, 0:(idx+pad+1), ProcessInfo.DIST_IDX] = distances[i]    # Assign distance value
+                        temps_dist[corr_scan, 0:(idx+pad+1), ProcessInfo.ANGLE_IDX] = angles[i]      # Assign angle value
                     else:
-                        temps_dist[scan, idx - 2:idx + 3, ProcessInfo.DIST_IDX] = distances[i]  # Assign distance value
-                        temps_dist[scan, idx - 2:idx + 3, ProcessInfo.ANGLE_IDX] = angles[i]    # Assign angle value
+                        temps_dist[corr_scan, (idx-pad):(idx+pad+1), ProcessInfo.DIST_IDX] = distances[i]  # Assign distance value
+                        temps_dist[corr_scan, (idx-pad):(idx+pad+1), ProcessInfo.ANGLE_IDX] = angles[i]    # Assign angle value
 
             else:
                 print('Error! Processing method [in <class>ProcessInfo] incorrectly defined.')
                 sys.exit()
 
 
-    # ------------------------------------------------------------------------------------------------------------------
-    # Iterating loop where we loop through finding the next data point available, we then perform
-    # A linear interpolation between these 2 data points and set all values between from this - then move onto the next
-    # Gap of data points
-    # has_vals = np.nonzero(temps_dist[:, :, ProcessInfo.ANGLE_IDX])    # Array for all non-zero elements - where we have lidar data - we use angle not distance in case a true distance reading is exactly 0
-    #
-    # if ProcessInfo.ANGLE_INTERP:
-    #     print('Performing angle interpolation...')
-    #     # Interpolate distance across the same angles - may find that the delay is too large in this data (not enough
-    #     # Data points, but it is worth trying)
-    #     unique_cols = np.unique(has_vals[1])
-    #     for col in unique_cols:
-    #         # Find all places where there is a distance value in column col
-    #         all_idxs = np.where(has_vals[1] == col)[0]
-    #
-    #         # Loop through interpolating between values
-    #         num_iter = len(all_idxs) - 1
-    #         for i in range(num_iter):
-    #             idx_1 = all_idxs[i]
-    #             idx_2 = all_idxs[i+1]
-    #
-    #             val_1 = temps_dist[has_vals[0][idx_1], col, ProcessInfo.DIST_IDX]
-    #             val_2 = temps_dist[has_vals[0][idx_2], col, ProcessInfo.DIST_IDX]
-    #
-    #             scan_dif = (has_vals[0][idx_2] - has_vals[0][idx_1])    # Number of scans apart
-    #             if scan_dif <= 1:
-    #                 print('No interpolation required at row %i of column %i' % (i, col))
-    #                 continue
-    #
-    #             grad = (val_2 - val_1) / scan_dif                       # Gradient for linear fit to data
-    #
-    #             elements = (np.arange(scan_dif) * grad) + val_1
-    #             elements = elements[1:]  # Don't use first element as it would replace the distance value we already have
-    #
-    #             # Assign interpolated distances to array, values above and below known points are assigned the last known value
-    #             temps_dist[(has_vals[0][idx_1] + 1):has_vals[0][idx_2], col, ProcessInfo.DIST_IDX] = elements
-    #             temps_dist[:has_vals[0][idx_1], col, ProcessInfo.DIST_IDX] = val_1
-    #             temps_dist[(has_vals[0][idx_2]+1):, col, ProcessInfo.DIST_IDX] = val_2
-    #             # Assign this column and angle index so that the next has_vals check returns the right result
-    #             temps_dist[:, col, ProcessInfo.ANGLE_IDX] = temps_dist[has_vals[0][idx_1], col, ProcessInfo.ANGLE_IDX]
+    # Perform interpolation of data
+    raw_lid = np.copy(temps_dist[:, :, ProcessInfo.DIST_IDX])   # Extract raw distance data so it can be returned separately to interpolated array
+    temps_dist[:, :, ProcessInfo.DIST_IDX] = interp_2D(temps_dist[:, :, ProcessInfo.DIST_IDX])
 
-    # After angle interp (if requested) we fill in the rest of the array by interp across scan
-    # Probably should adjust distance for change in angle here - especially if using ANGLE_INTERP
-    has_vals = np.nonzero(temps_dist[:, :, ProcessInfo.ANGLE_IDX])    # Array for all non-zero elements - where we have lidar data
 
-    num_of_interp = len(has_vals[0]) - 1    # Number of interpoaltions needed
-    count = 0  # Lines with no lidar data points
-    for i in range(num_of_interp):
-        # print('Interpolating point %i of %i' % (i + 1, num_of_interp))
-        # Find number of elements between these two points.
-        # Linearly interpolate between two points
-        # Move to net point
 
-        if has_vals[1][i+1] == has_vals[1][i] + 1 or (has_vals[1][i+1] == 0 and has_vals[1][i] == ArrayInfo.len_lsp-1):
-            continue    # No need to interpolate if points are next door to each other
+    return temps_dist, raw_lid
 
-        val_1 = temps_dist[has_vals[0][i], has_vals[1][i], ProcessInfo.DIST_IDX]
-        val_2 = temps_dist[has_vals[0][i+1], has_vals[1][i+1], ProcessInfo.DIST_IDX]
 
-        scan_dif = (has_vals[0][i+1] - has_vals[0][i])                  # Number of scans apart
-        line_dif = has_vals[1][i+1] - has_vals[1][i]                    # Number of elements difference across the line
-        num_el_dif = (scan_dif * ArrayInfo.len_lsp) + line_dif          # Number of elements between the 2 data points
-        grad = (val_2 - val_1) / num_el_dif                             # Gradient for linear fit to data
-        # print(has_vals[0][i], has_vals[0][i+1])
-        # print(has_vals[1][i], has_vals[1][i+1])
-        # print(scan_dif, line_dif, num_el_dif)
+def scan_shift(scan_speeds, idx, movement_speed):
+    """Calculate the shift in scan line data needed to correct for instrument offset/movement speed"""
+    # Need to think about when scan speed == 0, when we don't have a line of data. I think I should just remove these lines from the array, and shift everything up.
+    # This divide by zero is what is ruining the data
+    incr = ProcessInfo.INSTRUMENT_DIRECTION # Get increment from class (either +1 or -1 depending on instrument orientation)
 
-        # Calculate values
-        elements = (np.arange(num_el_dif) * grad) + val_1
-        elements = elements[1:]     # Don't use first element as it would replace the distance value we already have
+    time_taken = ProcessInfo.LIDAR_LSP_DIST / movement_speed
 
-        # If we have whole lines of empty data (scan_dif > 0) the assignment is slightly different
-        if scan_dif > 0:
+    num_scans = len(scan_speeds)
+    scan_time = 0
+    while scan_time < time_taken:
+        # Return if we have reached the first point of data and still haven't got to the time required
+        if idx < 0 or idx >= num_scans:
+            print('Lidar offset extends beyond the bounds of LSP data')
+            return None
+        elif scan_speeds[idx] == 0:
+            print('Scan speed=0, either all blank LSP lines have not been removed, or we have reached the end of the data')
+            return None
 
-            line_start_idx = (has_vals[1][i] + 1) - ArrayInfo.len_lsp  # Starting index
-            line_end_idx = has_vals[1][i + 1]
-            # Assign values to incomplete scan lines
-            temps_dist[has_vals[0][i], line_start_idx:, ProcessInfo.DIST_IDX] = elements[:abs(line_start_idx)]
-            if line_end_idx != 0:
-                # If index is zero we assign no values to this row, as there is already a value as the first element.
-                temps_dist[has_vals[0][i+1], :line_end_idx, ProcessInfo.DIST_IDX] = elements[-line_end_idx:]
-                elements_remain = elements[abs(line_start_idx):-line_end_idx]
+        # Loop backwards through scan speeds, summing the time of each line until we reach the time taken
+        scan_time += (1/scan_speeds[idx])
+
+        idx = idx - incr
+
+    # Determine whether this final scan, or the previous scan were closest to the time_taken
+    prev_scan_time = scan_time - (1/scan_speeds[idx+incr])  # Subtract final scan time to get previous cumulative time
+    difference = [abs(time_taken-scan_time), abs(time_taken-prev_scan_time)]
+    closest_scan = np.argmin(difference)
+
+    if closest_scan == 1:
+        idx = idx + (2*incr)        # Correct index if we want to use previous scan as final answer
+    elif closest_scan == 0:
+        idx = idx + incr        # Return back to final index if we want to use that as final answer
+    else:
+        print('Error determining scan position')
+        return None
+    return idx
+
+def interp_2D(data_grid):
+    """Perform 2D interpolation on data"""
+    print('Interpolating data...')
+    meth = ProcessInfo.INTERP_METHOD    # Get method for interpolating
+
+    xy_grid = np.nonzero(data_grid)
+    z_grid = data_grid[xy_grid]
+    grid_x, grid_y = np.mgrid[0:1000:1000j, 0:1000:1000j]
+    interp_grid = interpolate.griddata(xy_grid, z_grid, (grid_x, grid_y), method=meth)
+
+    return interp_grid
+
+def remove_empty_scans(data_array):
+    """Iterates through scan rows and removes empty scans where thermal data hasn't been recorded
+    -> Just shifts everything up a row"""
+    # Think about what to do with lidar data, as shifting that up a row might cause issues if there is already data in row above
+    # But leaving the data where it is may mean things get out of sync?
+    for scan in range(ArrayInfo.NUM_SCANS):
+        if data_array[scan, ArrayInfo.speed_idx] == 0:  # Use scan speed as identifier of no data
+            # Check if there is lidar data in the scan
+            if np.max(data_array[scan, ArrayInfo.speed_idx]) == 0:
+                # If no data is in scan shift everything up
+                data_array[scan:-1, :] = data_array[scan+1:, :]
             else:
-                elements_remain = elements[abs(line_start_idx):]
+                scan_new = scan - 1
+                while np.max(data_array[scan_new, ArrayInfo.lid_idx_start:]) != 0:
+                    scan_new -= 1
 
-            if scan_dif > 1:    # If at least one totally empty line (scan_dif > 1)
-            # Iterate through each empty scan line and assign distances to entire line
-                for scan in range(scan_dif - 1):
-                    print(scan)
-                    el_idx_start = scan * ArrayInfo.len_lsp
-                    el_idx_end = (scan * ArrayInfo.len_lsp) + ArrayInfo.len_lsp
-                    temps_dist[has_vals[0][i] + scan + 1, :, ProcessInfo.DIST_IDX] = elements_remain[el_idx_start:el_idx_end]
-                    count += 1
-        else:
-            temps_dist[has_vals[0][i], (has_vals[1][i]+1):has_vals[1][i+1], ProcessInfo.DIST_IDX] = elements[:]
+                # Remove empty line by shifting all data points upwards for temp and scan speed only
+                data_array[scan:-1, 0:ArrayInfo.lid_idx_start] = data_array[scan+1:, 0:ArrayInfo.lid_idx_start]
 
-        # MAy need to apply correction to distance here because of the angle of the scan? Probably should use the proper
-        # Data points as points of reference
-        # OR could go back on another loop and do angle correction, as I won't be interpolating or messing with the angle dimension of the matrix in this loop
-    print('Number of empty scans: %i' % np.sum(EMPTY_LID_FLAG))
-    print('Number of empty rows in second processing: %i' % count)
-    return temps_dist
+                # Then shift lidar info up separately, moving all above points too where necessary (so we don't overwrite lines)
+                data_array[scan_new:-1, ArrayInfo.lid_idx_start:] = data_array[scan_new+1:, ArrayInfo.lid_idx_start:]
+
+            # Finally, whatever the above shifting process, we append zeros to the final line
+            data_array[-1, :] = 0
+            pass
+
+    # Return modified data array
+    return data_array
 
 directory = 'C:\\Users\\tw9616\\Documents\\PhD\\EE Placement\\Lidar\\RPLIDAR_A2M6\\VC2017 Test\\sdk\\output\\win32\\Release\\2018-02-08\\'
 extension = '.mat'      # File extension for array we want to read in
 
+# List files
 files = [f for f in os.listdir(directory) if f.endswith(extension)]
 
+# Intiate main array for data holding
 temps_dist = np.zeros([ArrayInfo.NUM_SCANS, ArrayInfo.len_lsp, ProcessInfo.NUM_Z_DIM])  # Temperature/distance array (hold all information
 
+# Read in data
 lsp_proc = ProcessLSP()
 data_array = lsp_proc.read_array(directory + files[-3])['arr']
-print(data_array)
+data_array = remove_empty_scans(data_array)
+
+# Extract scan speeds, temperature data and then lidar data
 scan_speeds = data_array[:, ArrayInfo.speed_idx]
-temps_dist[:, :, 0] = data_array[:, 0:ArrayInfo.len_lsp]
+temps_dist[:, :, ProcessInfo.TEMP_IDX] = data_array[:, 0:ArrayInfo.len_lsp]
 lidar = data_array[:, ArrayInfo.lid_idx_start:]
 scan_num = np.arange(0, data_array.shape[0])
 
-sorted_array = interpolate_data(lidar, temps_dist)
+# Perform main processing, positioning lidar data and interpolating it to fill up data points
+sorted_array, raw_lid = process_data(lidar, temps_dist, scan_speeds)
 
-print('File prcessed: %s' % files[-3])
+print('File processed: %s' % files[-3])
 
 # Plot
 f = plt.figure()
@@ -242,25 +260,39 @@ ax.plot(sorted_array[:, 500, ProcessInfo.DIST_IDX])
 # for i in range(450, 550, 10):
 #     ax.plot(sorted_array[:, i, ProcessInfo.DIST_IDX])
 
-fig, ax1 = plt.subplots()
-ax1.plot(sorted_array[:, 500, ProcessInfo.DIST_IDX], 'b-')
-ax1.set_xlabel('Scan number')
-ax1.set_ylabel('Distance [mm]', color='b')
-ax1.tick_params('y', colors='b')
+# Distance + temperature plots
+for i in range(0, 1000, 100):
+    fig, ax1 = plt.subplots()
+    ax1.plot(sorted_array[:, i, ProcessInfo.DIST_IDX], 'b-')
+    ax1.set_xlabel('Scan number')
+    ax1.set_ylabel('Distance [mm]', color='b')
+    ax1.tick_params('y', colors='b')
 
-ax2 = ax1.twinx()
-ax2.plot(sorted_array[:, 500, ProcessInfo.TEMP_IDX], 'r-')
-ax2.set_ylabel(r'Temperature [$^o$C]', color='r')
-ax2.tick_params('y', colors='r')
+    ax2 = ax1.twinx()
+    ax2.plot(sorted_array[:, i, ProcessInfo.TEMP_IDX], 'r-')
+    ax2.set_ylabel(r'Temperature [$^o$C]', color='r')
+    ax2.tick_params('y', colors='r')
 
-vector_distance = np.zeros((ArrayInfo.NUM_SCANS*ArrayInfo.len_lsp))  # Loop thorugh and put all distnces in here and then plot to look at the interpolation - is it wokring
-for i in range(ArrayInfo.NUM_SCANS):
-    idx = i * ArrayInfo.len_lsp
-    vector_distance[idx:idx+ArrayInfo.len_lsp] = sorted_array[i, :, ProcessInfo.DIST_IDX]
-# Plot
-f = plt.figure()
-ax = f.add_subplot(111)
-ax.plot(vector_distance)
+
+# -------------------------------------------------------------------------------------------------
+# Colourmap images of temperature and distance
+# Raw lidar plot
+f, ax = plt.subplots()
+img = ax.imshow(raw_lid, cmap='nipy_spectral')
+cbar = f.colorbar(img)
+cbar.set_label('Distance [mm]')
+
+# Interpolated lidar plot
+f, ax = plt.subplots()
+img = ax.imshow(temps_dist[:, :, ProcessInfo.DIST_IDX], cmap='nipy_spectral')
+cbar = f.colorbar(img)
+cbar.set_label('Distance [mm]')
+
+# Temperature plot
+f, ax = plt.subplots()
+img = ax.imshow(sorted_array[:, :, ProcessInfo.TEMP_IDX], cmap='nipy_spectral')
+cbar = f.colorbar(img)
+cbar.set_label(r'Temperature [$^o$C]')
+# -------------------------------------------------------------------------------------------------
+
 plt.show()
-
-
