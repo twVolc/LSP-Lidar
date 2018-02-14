@@ -8,7 +8,7 @@ from scipy import interpolate
 import sys
 
 
-class ProcessInfo:
+class ProcessInfo(ArrayInfo):
     """Contains properties used in post-processing data
     -> User may need to change these properties"""
     LIDAR_LSP_DIST = 0.11       # Distance between Lidar and LSP acquisition positions (metres)
@@ -42,30 +42,30 @@ class ProcessInfo:
     INTERP_METHOD = 'cubic'     # Method of interpolation for 2d_interp()
 
 
-def process_data(lidar_data, temps_dist, scan_speeds):
+def process_data(lidar_data, temps_dist, scan_speeds, info=ProcessInfo(), q_dat=None):
     """Main processing function
     -> Positions lidar data in main array
     -> Interpolates lidar data such that every temperature point has an associated distance
     -> Returns processed array"""
-    movement_speed = ProcessInfo.INSTRUMENT_SPEED       # Will want to change this assignement when we stream speed
+    movement_speed = info.INSTRUMENT_SPEED       # Will want to change this assignement when we stream speed
     corr_scan = None    # Just intialising variable which needs to exists in first main loop - correct scan index
 
-    EMPTY_LID_FLAG = np.zeros([ArrayInfo.NUM_SCANS])    # Array holding flags if lidar data is empty for that scan
+    EMPTY_LID_FLAG = np.zeros([info.NUM_SCANS])    # Array holding flags if lidar data is empty for that scan
     lid_scan_size = lidar_data.shape[1]                 # Number of elements avaailable for lidar data per LSP scan
     distance_idxs = np.arange(Instruments.LIDAR_DIST_IDX, lid_scan_size, Instruments.NUM_LIDAR_PTS)     # Indices for extraction of all distance data points per scan line
     angle_idxs = np.arange(Instruments.LIDAR_ANGLE_IDX, lid_scan_size, Instruments.NUM_LIDAR_PTS)       # As above
     quality_idxs = np.arange(Instruments.LIDAR_QUAL_IDX, lid_scan_size, Instruments.NUM_LIDAR_PTS)      # As above
 
-    pad = ProcessInfo.LIDAR_PADDING     # Set padding for lidar data
+    pad = info.LIDAR_PADDING     # Set padding for lidar data
     # -----------------------------------------------------------------------------------------------------------------
     # First iterations - find where lidar data is and put it into array with indices corresponding to a temperature
-    for scan in range(ArrayInfo.NUM_SCANS):
-        print('Processing scan %i of %i' % (scan + 1, ArrayInfo.NUM_SCANS))
+    for scan in range(info.NUM_SCANS):
+        print('Processing scan %i of %i' % (scan + 1, info.NUM_SCANS))
         # Iterate through the scans assigning a distance and angle to each temperature measurement
         # Need to interpolate across a scan where necessary by finding the number of lidar points for that scan line
         # Also need to interpolate between scans where no lidar data is found
         distances = lidar_data[scan, distance_idxs]
-        angles = lidar_data[scan, angle_idxs] + ProcessInfo.LIDAR_ANGLE_OFFSET  # Apply offset to angles to match LSP
+        angles = lidar_data[scan, angle_idxs] + info.LIDAR_ANGLE_OFFSET  # Apply offset to angles to match LSP
         quality = lidar_data[scan, quality_idxs]
 
         # Find where data stops
@@ -86,9 +86,9 @@ def process_data(lidar_data, temps_dist, scan_speeds):
         else:
             # Calculate what scan line the lidar data needs to be placed on - shift dependent on movement/scan speed etc
             # Only done if SHIFT_SCANS flag is True, otherwise process data without shifting scans
-            if ProcessInfo.SHIFT_SCANS:
+            if info.SHIFT_SCANS:
                 prev_scan = corr_scan
-                corr_scan = scan_shift(scan_speeds, scan, movement_speed)
+                corr_scan = scan_shift(scan_speeds, scan, movement_speed, info=info)
                 if corr_scan is None:
                     continue        # If function returns None - no match for LSP line, we continue
             else:
@@ -96,28 +96,28 @@ def process_data(lidar_data, temps_dist, scan_speeds):
                 prev_scan = -1      # Set as dummy so we don't edit corr scan later on
 
             # PLACING LIDAR DATA IN ARRAY > DEPENDENT ON REQUESTED METHOD
-            if ProcessInfo.TIME_INTERP:
+            if info.TIME_INTERP:
                 if corr_scan == prev_scan:
                     corr_scan += 1          # Correct the scan to next line if we have already used line
 
                 # Find how to spread lidar data points across scan
-                spread_dat = int(np.floor(ArrayInfo.len_lsp / (num_dat + 1)))
+                spread_dat = int(np.floor(info.len_lsp / (num_dat + 1)))
 
                 for i in range(num_dat):
-                    if (angles[i] + 1) > ProcessInfo.LSP_MAX_ANGLE or (angles[i] + 1) < ProcessInfo.LSP_MIN_ANGLE:
+                    if (angles[i] + 1) > info.LSP_MAX_ANGLE or (angles[i] + 1) < info.LSP_MIN_ANGLE:
                         EMPTY_LID_FLAG[scan] = 1  # Flag that we have no data for this scan
                         continue  # Ignore measurements outside of the FOV of the LSP
                     idx = (i + 1) * spread_dat                                  # Index for placing value
-                    temps_dist[corr_scan, idx, ProcessInfo.DIST_IDX] = distances[i]  # Assign distance value
-                    temps_dist[corr_scan, idx, ProcessInfo.ANGLE_IDX] = angles[i]    # Assign angle value
+                    temps_dist[corr_scan, idx, info.DIST_IDX] = distances[i]  # Assign distance value
+                    temps_dist[corr_scan, idx, info.ANGLE_IDX] = angles[i]    # Assign angle value
 
-            elif ProcessInfo.ANGLE_INTERP:
+            elif info.ANGLE_INTERP:
                 # Loop through angles and assign data to the specific angle it corresponds to in the LSP scan
                 for i in range(num_dat):
-                    if (angles[i] + 1) > ProcessInfo.LSP_MAX_ANGLE or (angles[i] + 1) < ProcessInfo.LSP_MIN_ANGLE:
+                    if (angles[i] + 1) > info.LSP_MAX_ANGLE or (angles[i] + 1) < info.LSP_MIN_ANGLE:
                         EMPTY_LID_FLAG[scan] = 1  # Flag that we have no data for this scan
                         continue    # Ignore measurements outside of the FOV of the LSP
-                    idx = np.argmin(abs(ProcessInfo.LSP_ANGLES - angles[i]))
+                    idx = np.argmin(abs(info.LSP_ANGLES - angles[i]))
                     # print(idx)
 
                     # Assigning distance value with padding (5 temperature points are assigned the same distance)
@@ -125,11 +125,11 @@ def process_data(lidar_data, temps_dist, scan_speeds):
                     # Values at edge of FOV are padded differently (don't need to have specific assignments for upper
                     # indices of array because over assignment of indices just gets ignored in python
                     if idx < pad:
-                        temps_dist[corr_scan, 0:(idx+pad+1), ProcessInfo.DIST_IDX] = distances[i]    # Assign distance value
-                        temps_dist[corr_scan, 0:(idx+pad+1), ProcessInfo.ANGLE_IDX] = angles[i]      # Assign angle value
+                        temps_dist[corr_scan, 0:(idx+pad+1), info.DIST_IDX] = distances[i]    # Assign distance value
+                        temps_dist[corr_scan, 0:(idx+pad+1), info.ANGLE_IDX] = angles[i]      # Assign angle value
                     else:
-                        temps_dist[corr_scan, (idx-pad):(idx+pad+1), ProcessInfo.DIST_IDX] = distances[i]  # Assign distance value
-                        temps_dist[corr_scan, (idx-pad):(idx+pad+1), ProcessInfo.ANGLE_IDX] = angles[i]    # Assign angle value
+                        temps_dist[corr_scan, (idx-pad):(idx+pad+1), info.DIST_IDX] = distances[i]  # Assign distance value
+                        temps_dist[corr_scan, (idx-pad):(idx+pad+1), info.ANGLE_IDX] = angles[i]    # Assign angle value
 
             else:
                 print('Error! Processing method [in <class>ProcessInfo] incorrectly defined.')
@@ -137,21 +137,24 @@ def process_data(lidar_data, temps_dist, scan_speeds):
 
 
     # Perform interpolation of data
-    raw_lid = np.copy(temps_dist[:, :, ProcessInfo.DIST_IDX])   # Extract raw distance data so it can be returned separately to interpolated array
-    temps_dist[:, :, ProcessInfo.DIST_IDX] = interp_2D(temps_dist[:, :, ProcessInfo.DIST_IDX])
+    raw_lid = np.copy(temps_dist[:, :, info.DIST_IDX])   # Extract raw distance data so it can be returned separately to interpolated array
+    temps_dist[:, :, info.DIST_IDX] = interp_2D(temps_dist[:, :, info.DIST_IDX])
 
-
+    # USe queue to return data if this function is a thread - don't think this is necessary in the end
+    if q_dat is not None:
+        q_dat.put(temps_dist)
+        q_dat.put(raw_lid)
 
     return temps_dist, raw_lid
 
 
-def scan_shift(scan_speeds, idx, movement_speed):
+def scan_shift(scan_speeds, idx, movement_speed, info=ProcessInfo()):
     """Calculate the shift in scan line data needed to correct for instrument offset/movement speed"""
     # Need to think about when scan speed == 0, when we don't have a line of data. I think I should just remove these lines from the array, and shift everything up.
     # This divide by zero is what is ruining the data
-    incr = ProcessInfo.INSTRUMENT_DIRECTION # Get increment from class (either +1 or -1 depending on instrument orientation)
+    incr = info.INSTRUMENT_DIRECTION # Get increment from class (either +1 or -1 depending on instrument orientation)
 
-    time_taken = ProcessInfo.LIDAR_LSP_DIST / movement_speed
+    time_taken = info.LIDAR_LSP_DIST / movement_speed
 
     num_scans = len(scan_speeds)
     scan_time = 0
@@ -183,10 +186,10 @@ def scan_shift(scan_speeds, idx, movement_speed):
         return None
     return idx
 
-def interp_2D(data_grid):
+def interp_2D(data_grid, info=ProcessInfo()):
     """Perform 2D interpolation on data"""
     print('Interpolating data...')
-    meth = ProcessInfo.INTERP_METHOD    # Get method for interpolating
+    meth = info.INTERP_METHOD    # Get method for interpolating
 
     xy_grid = np.nonzero(data_grid)
     z_grid = data_grid[xy_grid]
@@ -224,75 +227,77 @@ def remove_empty_scans(data_array):
     # Return modified data array
     return data_array
 
-directory = 'C:\\Users\\tw9616\\Documents\\PhD\\EE Placement\\Lidar\\RPLIDAR_A2M6\\VC2017 Test\\sdk\\output\\win32\\Release\\2018-02-08\\'
-extension = '.mat'      # File extension for array we want to read in
 
-# List files
-files = [f for f in os.listdir(directory) if f.endswith(extension)]
+if __name__ == '__main__':
+    directory = 'C:\\Users\\tw9616\\Documents\\PhD\\EE Placement\\Lidar\\RPLIDAR_A2M6\\VC2017 Test\\sdk\\output\\win32\\Release\\2018-02-08\\'
+    extension = '.mat'      # File extension for array we want to read in
 
-# Intiate main array for data holding
-temps_dist = np.zeros([ArrayInfo.NUM_SCANS, ArrayInfo.len_lsp, ProcessInfo.NUM_Z_DIM])  # Temperature/distance array (hold all information
+    # List files
+    files = [f for f in os.listdir(directory) if f.endswith(extension)]
 
-# Read in data
-lsp_proc = ProcessLSP()
-data_array = lsp_proc.read_array(directory + files[-3])['arr']
-data_array = remove_empty_scans(data_array)
+    # Intiate main array for data holding
+    temps_dist = np.zeros([ArrayInfo.NUM_SCANS, ArrayInfo.len_lsp, ProcessInfo.NUM_Z_DIM])  # Temperature/distance array (hold all information
 
-# Extract scan speeds, temperature data and then lidar data
-scan_speeds = data_array[:, ArrayInfo.speed_idx]
-temps_dist[:, :, ProcessInfo.TEMP_IDX] = data_array[:, 0:ArrayInfo.len_lsp]
-lidar = data_array[:, ArrayInfo.lid_idx_start:]
-scan_num = np.arange(0, data_array.shape[0])
+    # Read in data
+    lsp_proc = ProcessLSP()
+    data_array = lsp_proc.read_array(directory + files[-3])['arr']
+    data_array = remove_empty_scans(data_array)
 
-# Perform main processing, positioning lidar data and interpolating it to fill up data points
-sorted_array, raw_lid = process_data(lidar, temps_dist, scan_speeds)
+    # Extract scan speeds, temperature data and then lidar data
+    scan_speeds = data_array[:, ArrayInfo.speed_idx]
+    temps_dist[:, :, ProcessInfo.TEMP_IDX] = data_array[:, 0:ArrayInfo.len_lsp]
+    lidar = data_array[:, ArrayInfo.lid_idx_start:]
+    scan_num = np.arange(0, data_array.shape[0])
 
-print('File processed: %s' % files[-3])
+    # Perform main processing, positioning lidar data and interpolating it to fill up data points
+    sorted_array, raw_lid = process_data(lidar, temps_dist, scan_speeds)
 
-# Plot
-f = plt.figure()
-ax = f.add_subplot(111)
-ax.plot(sorted_array[:, 500, ProcessInfo.TEMP_IDX])
+    print('File processed: %s' % files[-3])
 
-f = plt.figure()
-ax = f.add_subplot(111)
-ax.plot(sorted_array[:, 500, ProcessInfo.DIST_IDX])
-# for i in range(450, 550, 10):
-#     ax.plot(sorted_array[:, i, ProcessInfo.DIST_IDX])
+    # Plot
+    f = plt.figure()
+    ax = f.add_subplot(111)
+    ax.plot(sorted_array[:, 500, ProcessInfo.TEMP_IDX])
 
-# Distance + temperature plots
-for i in range(0, 1000, 100):
-    fig, ax1 = plt.subplots()
-    ax1.plot(sorted_array[:, i, ProcessInfo.DIST_IDX], 'b-')
-    ax1.set_xlabel('Scan number')
-    ax1.set_ylabel('Distance [mm]', color='b')
-    ax1.tick_params('y', colors='b')
+    f = plt.figure()
+    ax = f.add_subplot(111)
+    ax.plot(sorted_array[:, 500, ProcessInfo.DIST_IDX])
+    # for i in range(450, 550, 10):
+    #     ax.plot(sorted_array[:, i, ProcessInfo.DIST_IDX])
 
-    ax2 = ax1.twinx()
-    ax2.plot(sorted_array[:, i, ProcessInfo.TEMP_IDX], 'r-')
-    ax2.set_ylabel(r'Temperature [$^o$C]', color='r')
-    ax2.tick_params('y', colors='r')
+    # Distance + temperature plots
+    for i in range(0, 1000, 100):
+        fig, ax1 = plt.subplots()
+        ax1.plot(sorted_array[:, i, ProcessInfo.DIST_IDX], 'b-')
+        ax1.set_xlabel('Scan number')
+        ax1.set_ylabel('Distance [mm]', color='b')
+        ax1.tick_params('y', colors='b')
+
+        ax2 = ax1.twinx()
+        ax2.plot(sorted_array[:, i, ProcessInfo.TEMP_IDX], 'r-')
+        ax2.set_ylabel(r'Temperature [$^o$C]', color='r')
+        ax2.tick_params('y', colors='r')
 
 
-# -------------------------------------------------------------------------------------------------
-# Colourmap images of temperature and distance
-# Raw lidar plot
-f, ax = plt.subplots()
-img = ax.imshow(raw_lid, cmap='nipy_spectral')
-cbar = f.colorbar(img)
-cbar.set_label('Distance [mm]')
+    # -------------------------------------------------------------------------------------------------
+    # Colourmap images of temperature and distance
+    # Raw lidar plot
+    f, ax = plt.subplots()
+    img = ax.imshow(raw_lid, cmap='nipy_spectral')
+    cbar = f.colorbar(img)
+    cbar.set_label('Distance [mm]')
 
-# Interpolated lidar plot
-f, ax = plt.subplots()
-img = ax.imshow(temps_dist[:, :, ProcessInfo.DIST_IDX], cmap='nipy_spectral')
-cbar = f.colorbar(img)
-cbar.set_label('Distance [mm]')
+    # Interpolated lidar plot
+    f, ax = plt.subplots()
+    img = ax.imshow(temps_dist[:, :, ProcessInfo.DIST_IDX], cmap='nipy_spectral')
+    cbar = f.colorbar(img)
+    cbar.set_label('Distance [mm]')
 
-# Temperature plot
-f, ax = plt.subplots()
-img = ax.imshow(sorted_array[:, :, ProcessInfo.TEMP_IDX], cmap='nipy_spectral')
-cbar = f.colorbar(img)
-cbar.set_label(r'Temperature [$^o$C]')
-# -------------------------------------------------------------------------------------------------
+    # Temperature plot
+    f, ax = plt.subplots()
+    img = ax.imshow(sorted_array[:, :, ProcessInfo.TEMP_IDX], cmap='nipy_spectral')
+    cbar = f.colorbar(img)
+    cbar.set_label(r'Temperature [$^o$C]')
+    # -------------------------------------------------------------------------------------------------
 
-plt.show()
+    plt.show()

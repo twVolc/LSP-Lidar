@@ -1,0 +1,222 @@
+import tkinter as tk
+import tkinter.ttk as ttk
+from tkinter import filedialog
+from tkinter import messagebox
+import tkinter.font as tkFont
+
+import matplotlib.pyplot as plt
+from matplotlib.backends.backend_tkagg import FigureCanvasTkAgg, NavigationToolbar2TkAgg
+
+from threading import Thread
+import queue
+import sys
+
+import numpy as np
+
+from post_process import process_data, ProcessInfo, remove_empty_scans
+from LSP_control import ProcessLSP
+
+class TheGUI(ttk.Frame):
+    """Main GUI to help in acquisition and running of LSP/lidar instrument"""
+    def __init__(self, parent):
+        """Initialise class"""
+        ttk.Frame.__init__(self, parent)
+
+        self.parent = parent
+        self.parent.title('LSP-Lidar Control')
+        self.parent.protocol('WM_DELETE_WINDOW', self.exit_app)
+
+        self.initdir = 'C:\\Users\\tw9616\\Documents\\PhD\\EE Placement\\Lidar\\RPLIDAR_A2M6\\VC2017 Test\\sdk\\output\\win32\\Release\\'
+
+        self.setts = SettingsGUI()      # Holds GUI settings
+        self.info = ProcessInfo()       # Holds information needed for processing
+        self.lsp_proc = ProcessLSP()    # Has some useful processing algorithms for LSP data
+        self._q = queue.Queue()         # Queue to retrieve data from thread
+
+        # ----------------------------------------------------------------
+        # Tab setup
+        self.tabs = ttk.Notebook(self.parent)
+        self.acqFrame = ttk.Frame(self.tabs)
+        self.analysisFrame = ttk.Frame(self.tabs)
+        self.tabs.add(self.acqFrame, text='Acquisition')
+        self.tabs.add(self.analysisFrame, text='Analysis')
+        self.tabs.pack(fill="both", expand=1)
+
+        # Setup frames
+        self.__acq_setup__(self.acqFrame)
+        self.__analysis_setup__(self.analysisFrame)
+        # -----------------------------------------------------------------
+
+    def exit_app(self):
+        """Exit app options"""
+        if messagebox.askokcancel("Quit", "Are you sure you want to quit?"):
+            # Killing all threads and then exiting the GUI
+            self.parent.destroy()
+            sys.exit()
+
+    def __acq_setup__(self, frame):
+        """Setup acquisition frame"""
+        pass
+
+    def __analysis_setup__(self, frame):
+        """Setup analysis frame"""
+
+        # Setup file choice and associated button
+        self.data_file = None
+        self.data_file_lab = ttk.Label(frame, text='No file selected')
+        self.data_file_lab.pack()
+        file_butt = ttk.Button(frame, text='Choose file', command=self.select_file)
+        file_butt.pack()
+
+        # Process button
+        process_butt = tk.Button(frame, text='RUN', bg='limegreen',
+                                 font=self.setts.mainFontBold, command=self.process_data_thread)
+        process_butt.pack()
+
+        # --------------------------------------------------------------------
+        # Settings setup
+        # --------------------------------------------------------------------
+        set_frame = ttk.Labelframe(frame, text='Settings', relief=tk.RAISED, borderwidth=5)
+        set_frame.pack(side='top')
+
+        self.dir_var = tk.StringVar()
+        self.dir_var.set(self.setts.lsp_first[0])
+        dir_lab = ttk.Label(set_frame, text='Instrument Orientation:')
+        dir_lab.grid(row=0, column=0)
+        dir_ent = ttk.OptionMenu(set_frame, self.dir_var, self.setts.lsp_first[0],
+                                 self.setts.lsp_first[0], self.setts.lid_first[0])
+        dir_ent.grid(row=0, column=1)
+
+        # --------------------------------------------------------------------
+        # Plot setup
+        # --------------------------------------------------------------------
+        # Lidar distance plot
+        self.lid_plt = PlottingGUI(frame, 'Distance [mm]')
+        self.lid_plt.canv.get_tk_widget().pack(side='left')
+
+        # Lidar distance plot (interpolated)
+        self.lid_interp_plt = PlottingGUI(frame, 'Distance [mm]')
+        self.lid_interp_plt.canv.get_tk_widget().pack(side='left')
+
+        # LSP temperature plot
+        self.temp_plt = PlottingGUI(frame, r'Temperature [$^o$C]')
+        self.temp_plt.canv.get_tk_widget().pack(side='left')
+        # --------------------------------------------------------------------
+
+    def select_file(self):
+        """Create navigation box for selection of file and set filename when chosen"""
+        self.data_file = filedialog.askopenfilename(initialdir=self.initdir,
+                                                    filetypes=[('MAT file', '*.mat'), ('All files', '*.*')],
+                                                    title='Select data file')
+        if not self.data_file:
+            return
+        if len(self.data_file) > 23:
+            self.data_file_lab.configure(text='...' + self.data_file[-20:])
+        else:
+            self.data_file_lab.configure(text=self.data_file)
+
+    def process_data_thread(self):
+        """Start thread for processing data"""
+        self.data_dict = self.__prep_data__()
+        if self.data_dict is None:
+            return
+
+        instr_dir = self.dir_var.get()
+        if instr_dir == self.setts.lid_first[0]:
+            self.info.INSTRUMENT_DIRECTION = self.setts.lid_first[1]
+        elif instr_dir == self.setts.lsp_first[0]:
+            self.info.INSTRUMENT_DIRECTION = self.setts.lsp_first[1]
+        else:
+            print('Error!!! Unknown instrument direction definition: %s' % instr_dir)
+            return
+
+        # Perform main processing
+        # t = Thread(target=process_data, args=(self.data_dict['lidar'], self.data_dict['array'],
+        #                                       self.data_dict['speed'], self._q,))
+        # t.Daemon = True
+        # t.start()
+        self.data_array, self.raw_lid = process_data(self.data_dict['lidar'], self.data_dict['array'],
+                                                     self.data_dict['speed'], info=self.info)
+        self.update_plots()
+
+    def __prep_data__(self):
+        """Initialising things for processing of data"""
+        array_main = np.zeros([self.info.NUM_SCANS, self.info.len_lsp, self.info.NUM_Z_DIM])
+        if self.data_file is None:
+            print('Error!!! No file selected, cannot process data.')
+            return None
+        dat = self.lsp_proc.read_array(self.data_file)['arr']
+        full_dat = remove_empty_scans(dat)
+
+        # Extract data then pack into dictionary to be returned
+        scan_speeds = full_dat[:, self.info.speed_idx]
+        array_main[:, :, self.info.TEMP_IDX] = full_dat[:, 0:self.info.len_lsp]
+        lidar = full_dat[:, self.info.lid_idx_start:]
+        scan_num = np.arange(0, full_dat.shape[0])
+
+        # Compile data into dictionary
+        data_dict = {'array': array_main, 'speed': scan_speeds, 'lidar': lidar, 'Num_scans': scan_num}
+        return data_dict
+
+    def update_plots(self):
+        """Updates plots with new data"""
+        self.lid_plt.update_cmap(self.raw_lid)
+        self.lid_interp_plt.update_cmap(self.data_array[:, :, self.info.DIST_IDX])
+        self.temp_plt.update_cmap(self.data_array[:, :, self.info.TEMP_IDX])
+
+
+class SettingsGUI:
+    """Class to hold some settings of the GUI"""
+    def __init__(self):
+        self.bgColour = "#ccd"
+        self.style = ttk.Style()
+        self.style.configure("TFrame", background=self.bgColour)
+
+        self.font_size = 12
+        self.mainFont = tkFont.Font(family='Helvetica', size=self.font_size)
+        self.mainFontBold = tkFont.Font(family='Helvetica', size=self.font_size, weight='bold')
+
+        # Relating to instrument orientation
+        self.lid_first = ['Lidar First', -1]       # List holding string for GUI and associated value for ProcessInfo
+        self.lsp_first = ['LSP First', 1]          # Ditto
+
+
+class PlottingGUI:
+    """Class to help with plotting of data in GUI
+    ->instantiated by being passed the axis_label argument, defining the labelling of the plot"""
+    def __init__(self, frame, axis_label):
+        self.frame = frame        # tk frame
+        self.axis_label = axis_label        # Axis label (e.g. 'Distance [mm]')
+        self.cmap = 'nipy_spectral'  # Colourmap
+        self.img_size = [1000, 1000]        # Dimensions of image
+
+        self.__setup_plots__()  # Setup plot areas
+
+    def __setup_plots__(self):
+        """Performs initial plot setup"""
+        dummy = np.zeros(self.img_size)
+
+        self.fig, self.ax = plt.subplots()
+        self.img = self.ax.imshow(dummy, cmap=self.cmap)
+        self.cbar = self.fig.colorbar(self.img)
+        self.cbar.set_label(self.axis_label)
+
+        self.canv = FigureCanvasTkAgg(self.fig, master=self.frame)
+        self.__draw_canv__()
+
+    def update_cmap(self, data):
+        """Updates axis with with new data"""
+        self.img.set_data(data)                                             # Update data
+        self.img.set_clim(vmin=np.nanmin(data), vmax=np.nanmax(data))       # Set colour scale limits
+        self.__draw_canv__()                                                    # Draw new plot
+
+    def __draw_canv__(self):
+        """Draw canvas"""
+        self.canv.show()
+
+
+if __name__ == "__main__":
+    root = tk.Tk()
+    root.geometry('{0}x{1}+0+0'.format(root.winfo_screenwidth(), root.winfo_screenheight()))
+    gui = TheGUI(root)
+    root.mainloop()
