@@ -1,7 +1,12 @@
 Therm_Lidar Python
 
 Group of modules used to process Lidar and LSP data
-> LSP_control Contains a class for socket interfacing with LSP and a class for basic processing of data
+> GUI.py provides simple user-access to the functions provided by the other modules, and thus should be prefered
+ as the main starting point for new users
+
+> data_handler.py is the main acquisition module, used for combined LSP-lidar acquisitions and saving data
+
+> LSP_control.py Contains a class for socket interfacing with LSP and a class for basic processing of data
 
 > therm_process contains a little more processing detail of LSP data, but should probably be incoorporate into LSP_control
 

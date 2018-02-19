@@ -161,7 +161,7 @@ class SocketServ:
         self._queue.put(self.conn)
 
     def recv_data(self, _q, fmt):
-        """Receive LSP data stream"""
+        """Receive LSP or Lidar data stream"""
         fmt_full = self.__gen_fmt_str__(fmt)
         unpacker = struct.Struct(fmt_full)  # Size of message to be expected
         size_mess = struct.calcsize(fmt_full)  # Size of message to be expected
@@ -173,7 +173,11 @@ class SocketServ:
             # Chances are I'm not correctly restarting te data stream so I'm looping through printing the same thing?
             bytes_left = size_mess
             while bytes_left != 0:
-                data_stream += self.conn.recv(bytes_left)
+                try:
+                    data_stream += self.conn.recv(bytes_left)
+                except ConnectionResetError:
+                    print('Lidar closed connection. Data stream terminated')
+                    return
                 bytes_left = size_mess - len(data_stream)
 
             # Unpack message and put it in the queue

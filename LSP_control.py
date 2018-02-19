@@ -116,7 +116,7 @@ class SocketLSP:
         error_code = header[-1]
         # If bad error code, close socket and return
         if error_code != 0:
-            print('LSP providing error code of %i. Communication terminated!' %i)
+            print('LSP providing error code of %i. Communication terminated!' % error_code)
             self.close_socket()
             return
 

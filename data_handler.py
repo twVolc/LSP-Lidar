@@ -1,4 +1,9 @@
-# Main file to control data handling of both LSP and Lidar data simultaneously
+# =========================================================================================
+# Main file to control data acquisition/handling of both LSP and Lidar data simultaneously
+# =========================================================================================
+# Future work may incoorporate further data streams into this - e.g. GPS speed, tilt etc.
+# handle_data() is the main function to run, this starts and controls acquisitions
+
 from LSP_control import *
 from server import Instruments, SocketServ
 import numpy as np
@@ -10,6 +15,7 @@ from multiprocessing import Process, Queue
 import queue
 from subprocess import Popen
 import time
+import signal
 
 
 class ArrayInfo:
@@ -23,7 +29,7 @@ class ArrayInfo:
     NUM_SCANS = 1000                        # Number fo LSP scans saved to single file
 
 
-def handle_data():
+def handle_data(_q=queue.Queue()):
     """Function to do all of the data handling for both the LSP and RPLIDAR"""
     # DIRECTORY SETUP FOR DATA STORAGE
     data_path = '.\\'
@@ -38,8 +44,8 @@ def handle_data():
 
     # Create Lidar socket object which automatically opens a socket and tries to receive data from ultra_simple.exe
     serv_Lidar = SocketServ(Instruments.SERVER_LIDAR)
-    size_lid = serv_Lidar.num_pts_recv * Instruments.NUM_LIDAR_PTS  # Size of a single dataset packaged by serv_Lidar
-    num_lidar_iter = ArrayInfo.NUM_LIDAR_ACQ / serv_Lidar.num_pts_recv    # Number of iterations before we fill lidar space for a single LSP scan in our numpy array
+    size_lid = serv_Lidar.num_pts_recv * Instruments.NUM_LIDAR_PTS      # Size of a single dataset packaged by serv_Lidar
+    num_lidar_iter = ArrayInfo.NUM_LIDAR_ACQ / serv_Lidar.num_pts_recv  # Number of iterations before we fill lidar space for a single LSP scan in our numpy array
 
     # Send initial Hello message and check response
     lsp_comms.init_comms()
@@ -65,8 +71,9 @@ def handle_data():
 
     # Thread for receiving LSP data
     # lsp_q = queue.Queue()
+    exit_q = queue.Queue()
     lsp_q = Queue()
-    lsp_thread = threading.Thread(target=queue_lsp_data_thread, args=(lsp_comms, lsp_q,))       # Thread option
+    lsp_thread = threading.Thread(target=queue_lsp_data_thread, args=(lsp_comms, lsp_q, exit_q, ))       # Thread option
     # lsp_thread = Process(target=queue_lsp_data_multiprocess, args=(lsp_comms.sock, lsp_q,))     # Multiprocess option
     lsp_thread.daemon = True
     lsp_thread.start()
@@ -118,6 +125,27 @@ def handle_data():
         filename_q.put(full_path_save)      # Put filename in queue first
         data_q.put(data_array)              # Then put data in queue, so filename is already there for the function
 
+        try:
+            ex = _q.get(block=False)
+        except queue.Empty:
+            pass
+        else:
+            if ex == -1:
+                # Stop all processes and exit
+                data_q.put(-1)  # Terminate save data thread
+                exit_q.put(-1)  # Terminate LSP thread
+                save_thread.join()
+                lsp_thread.join()
+                os.kill(lidar_control.pid, signal.CTRL_C_EVENT)   # Stop lidar
+                lsp_comms.stop_stream_bin()                 # Stop LSP
+                resp = lsp_comms.recv_stream_resp()       # Receive response to stop LSP
+                if resp != 0:
+                    print('Error stopping stream. Closing socket.')
+                else:
+                    print('All worked well. Closing socket.')
+                lsp_comms.close_socket()                    # Close socket with LSP even if we haven't stopped binary stream
+
+
 
         # # For saving data
         # filename_lidar = datetime.datetime.now().strftime('%Y-%m-%d_%H%M%S') + '_lidar.dat'    # Filename from data/time
@@ -132,9 +160,22 @@ def handle_data():
                 # x += 1  # Represents the scan number of the LSP data, this can be used to
 
 
-def queue_lsp_data_thread(lsp_comms, lsp_q):
+def queue_lsp_data_thread(lsp_comms, lsp_q, exit_q):
     """Simple function to loop through receiving lsp data and putting it in queue"""
     while 1:
+        # Check if we should exit thread
+        try:
+            ex = exit_q.get(block=False)
+        except queue.Empty:
+            pass
+        else:
+            if ex == -1:
+                print('Exiting thread [queue_lsp_data_thread()]')
+                return
+            else:
+                print('Unknown exit command [{0}] in queue_lsp_data_thread()'.format(ex))
+
+        # Receive data and put into queue
         lsp_comms.recv_bin_data()
         unpacked_data = lsp_comms.parse_mess_bin()
         lsp_q.put(unpacked_data)
@@ -150,6 +191,12 @@ def save_data(data_q, filename_q):
     """Saves data array"""
     while 1:
         array2write = data_q.get()
+        if type(array2write) is not np.ndarray:   # Exit thread command
+            if array2write == -1:
+                print('Exiting thread [save_data()]')
+                return
+            else:
+                print('Unrecognisable exit command: {0}'.format(array2write))
         file2write = filename_q.get()
         # np.save(file2write, array2write)
         sci.savemat(file2write + '.mat', mdict={'arr': array2write})

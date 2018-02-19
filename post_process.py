@@ -6,6 +6,7 @@ from data_handler import ArrayInfo
 import numpy as np
 from scipy import interpolate
 import sys
+import h5py
 
 
 class ProcessInfo(ArrayInfo):
@@ -40,6 +41,43 @@ class ProcessInfo(ArrayInfo):
     else:
         ANGLE_INTERP = False
     INTERP_METHOD = 'cubic'     # Method of interpolation for 2d_interp()
+
+
+class DataHandler:
+    """Class to handle and hold all of the data for the GUI, and data processing
+    -> Eventually this should incoorporate all functions currently help in this file"""
+    def __init__(self, q_dat=None):
+        self._num_pts = ProcessInfo.len_lsp     # Number of data points in LSP scan
+        self.num_scans = 1000       # Number of scan lines in data array - may want to define this in a different way, rather than explicitly here, so that it can be easily varied (i.e. use numpy.shape on data array)
+        self._x_idx = 3             # Index for x coordinates of array
+        self._y_idx = 4             # Index for y coordinates of array
+        self._len_z = 5             # Length of array z dimension (Temperature, Distance (z), angle, x, y) - in time angle can be directly translated to y, but for now we leave it all in there
+
+        self.q_dat = q_dat          # Queue for putting data in
+
+        self.data_array = None
+        self.xyz_array = np.zeros([self._num_pts, self.num_scans, self._len_z])
+
+    @staticmethod
+    def save_hdf5(data_array, filename):
+        """Saves array in HDF5 format - universal format which can be read in C++ too"""
+        hf = h5py.File(filename, 'w')
+        hf.create_dataset('Array', data=data_array)
+        hf.close()
+
+    def create_xyz_basic(self):
+        self.xyz_array[:, :, :3] = self.data_array
+
+        # Iterate through each scan and assign it and arbitrary x coordinate (1st scan is 0, 2nd is 1 etc)
+        for x in range(self.num_scans):
+            self.xyz_array[x, :, self._x_idx] = x
+
+        # Iterate through each scan angle and give an arbitrary y coordinate
+        for y in range(self._num_pts):
+            # Reverse indices so that we start with bottom of array
+            # > np index starts top left as 0,0 but we want to set 0,0 as bottom left so that y increase up the rows
+            idx = self._num_pts - (y + 1)
+            self.xyz_array[idx, :, self._y_idx] = y
 
 
 def process_data(lidar_data, temps_dist, scan_speeds, info=ProcessInfo(), q_dat=None):
@@ -226,6 +264,8 @@ def remove_empty_scans(data_array):
 
     # Return modified data array
     return data_array
+
+
 
 
 if __name__ == '__main__':
