@@ -1,8 +1,13 @@
 Therm_Lidar Python
 
 Group of modules used to process Lidar and LSP data
-> GUI.py provides simple user-access to the functions provided by the other modules, and thus should be prefered
- as the main starting point for new users
+> Running GUI.py provides simple user-access to the functions provided by the other modules, and thus should be
+prefered as the main starting point for new users
+>> GUI_subs.py holds some important classes used by GUI.py predominatnly, to help build the GUI. They are separated
+to maintain code readability
+
+> post_process.py holds important classes/functions for processing the LSP/lidar data after it has been acquired.
+> It is used by GUI.py
 
 > data_handler.py is the main acquisition module, used for combined LSP-lidar acquisitions and saving data
 
@@ -15,7 +20,7 @@ Group of modules used to process Lidar and LSP data
 > read_lidar contains functinos to process saved lidar data. This may become deprecated if all data is pulled to local
 > programs and saved together in a different format
 
-> process_lidar contains a class to process lidar data
+> process_lidar contains a class to process lidar data - basically obsolete now
 
-> main is a general program which in the end will perform central functions, but currently is quite basic
+> main is a general program which in the end will perform central functions, but currently is quite basic - almost obsolete now
 

@@ -1,6 +1,8 @@
 # Script containing class for main data HUB and local machine networking of the lidar + LSP system
 # A Server will be created, opening a socket to communicate with local programs controlling the lidar and LSP separately
 
+# ONly used for Lidar now
+
 import socket
 import os
 from queue import Empty
@@ -82,6 +84,7 @@ class SocketServ:
         if status == 0:
             self.port = self.bind_to()
 
+
         # Save port name
         self.save_port()
 
@@ -151,13 +154,19 @@ class SocketServ:
 
     def get_connection(self):
         """Wait for client connection and then accept it"""
+        if self.instrument == Instruments.SERVER_LIDAR:
+            mess_start = 'LIDAR: '
+        elif self.instrument == Instruments.SERVER_LSP:
+            mess_start = 'LSP: '
+        else:
+            mess_start = 'Unknown: '
         # Wait for connection
-        print('Listening on port %i...' % self.port)
+        print(mess_start + 'Listening on port %i...' % self.port)
         self.sock.listen(1)
 
         # Accept connection
         self.conn, self.addr = self.sock.accept()
-        print('Got connection from %s' % self.addr[0])
+        print(mess_start + 'Got connection from %s' % self.addr[0])
         self._queue.put(self.conn)
 
     def recv_data(self, _q, fmt):

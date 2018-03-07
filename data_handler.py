@@ -13,6 +13,7 @@ import os
 import threading    # Consider using multiprocessing instead of threading - think it should be faster
 from multiprocessing import Process, Queue
 import queue
+import subprocess
 from subprocess import Popen
 import time
 import signal
@@ -30,7 +31,7 @@ class ArrayInfo:
 
 
 def handle_data(_q=queue.Queue()):
-    """Function to do all of the data handling for both the LSP and RPLIDAR"""
+    """Function to do all of the data handling during acquisition for both the LSP and RPLIDAR"""
     # DIRECTORY SETUP FOR DATA STORAGE
     data_path = '.\\'
     date_dir = datetime.datetime.now().strftime('%Y-%m-%d')
@@ -67,7 +68,7 @@ def handle_data(_q=queue.Queue()):
         return
 
     # Start lidar acquisitions
-    lidar_control = Popen(['.\\ultra_simple.exe'])
+    lidar_control = Popen(['.\\ultra_simple.exe'], shell=True)
 
     # Thread for receiving LSP data
     # lsp_q = queue.Queue()

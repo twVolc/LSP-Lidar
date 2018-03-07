@@ -1,18 +1,24 @@
+# MAIN FILE FOR POST PROCESSING OF DATA
+
 from LSP_control import ProcessLSP
 from server import Instruments
 import matplotlib.pyplot as plt
 import os
 from data_handler import ArrayInfo
+from GUI_subs import MessagesGUI
 import numpy as np
 from scipy import interpolate
 import sys
 import h5py
+from laspy import file as lasfile
+from laspy import header as lashead
 
 
 class ProcessInfo(ArrayInfo):
     """Contains properties used in post-processing data
     -> User may need to change these properties"""
-    LIDAR_LSP_DIST = 0.11       # Distance between Lidar and LSP acquisition positions (metres)
+    LIDAR_LSP_DIST_HOR = 0.11   # Horizontal Distance between Lidar and LSP acquisition positions (metres)
+    LIDAR_LSP_DIST_VERT = 0.11  # Vertical Distance between Lidar and LSP acquisition positions (metres)
     INSTRUMENT_SPEED = 0.05     # Speed of movement (m/s)
     INSTRUMENT_DIRECTION = 1    # Scan direction (LSP first=1, Lidar first=-1)
     SHIFT_SCANS = True          # Boolean for whether or not we apply the movement shift (True is generally required)
@@ -43,41 +49,153 @@ class ProcessInfo(ArrayInfo):
     INTERP_METHOD = 'cubic'     # Method of interpolation for 2d_interp()
 
 
-class DataHandler:
+class ErrorDist:
+    """Class for distance error calculations"""
+    min_error = 0.0005        # If there is a minimum error for every value below a spcified distance
+    min_error_dist = 1.5   # The distance for which the minimum error is always quoted
+    error_prop = 0.01       # Proportional error for error outside the minimum error range
+
+    def calc_error(self, data):
+        """Calculate errors for each element in a dataset"""
+        errors = np.zeros(data.shape)
+
+        # Values below minimum lidar distance are ascribed the minimum error
+        errors[data <= self.min_error_dist] = self.min_error
+
+        # Values above minimum have erros calculated by proportion of their value
+        errors[data > self.min_error_dist] = data[data > self.min_error_dist] * self.error_prop
+        return errors
+
+
+class DataProcessor:
     """Class to handle and hold all of the data for the GUI, and data processing
     -> Eventually this should incoorporate all functions currently help in this file"""
-    def __init__(self, q_dat=None):
+    def __init__(self, q_dat=None, mess_inst=None):
         self._num_pts = ProcessInfo.len_lsp     # Number of data points in LSP scan
         self.num_scans = 1000       # Number of scan lines in data array - may want to define this in a different way, rather than explicitly here, so that it can be easily varied (i.e. use numpy.shape on data array)
-        self._x_idx = 3             # Index for x coordinates of array
-        self._y_idx = 4             # Index for y coordinates of array
+        self.temp_idx = 0
+        self.x_idx = 3              # Index for x coordinates of array
+        self.y_idx = 4              # Index for y coordinates of array
+        self.z_idx = 1              # Index for distance coordinate of array
         self._len_z = 5             # Length of array z dimension (Temperature, Distance (z), angle, x, y) - in time angle can be directly translated to y, but for now we leave it all in there
 
         self.q_dat = q_dat          # Queue for putting data in
+        self.mess_inst = mess_inst  # Instance of MessagesGUI() for sending messages if necessary
 
         self.data_array = None
+        self.raw_lidar = None
         self.xyz_array = np.zeros([self._num_pts, self.num_scans, self._len_z])
+        self.flat_array = None
 
-    @staticmethod
-    def save_hdf5(data_array, filename):
+    def __check_array__(self):
+        """Housekeeping method, to check that we have data before we attempt to process it"""
+        if self.data_array is None:
+            mess = 'No data array is present, please load before attempting to create XYZ array.'
+            if isinstance(self.mess_inst, MessagesGUI):
+                self.mess_inst.message(mess)
+            else:
+                print(mess)
+            return False
+        else:
+            return True
+
+    def __check_flat_array__(self):
+        """Check if we have a flattened array"""
+        if self.flat_array is not None:
+            return True
+        else:
+            return False
+
+    def flatten_array(self):
+        """Flatten xyz array to enable plotting"""
+        numel = self.xyz_array[:, :, 0].size                # Number of elements in dataset
+        self.flat_array = np.zeros([self._len_z, numel])    # Create array to hold flattened array
+
+        # Loop through each dimension (dataset) and flatten it into new array
+        for dim in range(self._len_z):
+            self.flat_array[dim, :] = np.ravel(self.xyz_array[:, :, dim])
+
+    def get_x(self):
+        if self.__check_flat_array__():
+            return self.flat_array[self.x_idx, :]
+        else:
+            return None
+    def get_y(self):
+        if self.__check_flat_array__():
+            return self.flat_array[self.y_idx, :]
+        else:
+            return None
+    def get_z(self):
+        if self.__check_flat_array__():
+            return self.flat_array[self.z_idx, :]
+        else:
+            return None
+    def get_temp(self):
+        if self.__check_flat_array__():
+            return self.flat_array[self.temp_idx, :]
+        else:
+            return None
+
+    def calc_error_dist(self):
+        """Calculates the error of the dstance measurements based on RPlidar's error specifications"""
+        pass
+
+    def save_hdf5(self, filename):
         """Saves array in HDF5 format - universal format which can be read in C++ too"""
-        hf = h5py.File(filename, 'w')
-        hf.create_dataset('Array', data=data_array)
-        hf.close()
+        filename += '.h5'
+        try:
+            hf = h5py.File(filename, 'w')
+            hf.create_dataset('Array', data=self.flat_array)
+            hf.close()
+        except TypeError as err:
+           self.mess_inst.message('TypeError [{}] when attempting to save HDF5'.format(err))
 
     def create_xyz_basic(self):
+        """Generate a basic xyz array with no hold on speed, purely arbitrary distances"""
+        if not self.__check_array__():
+            return
+
         self.xyz_array[:, :, :3] = self.data_array
 
         # Iterate through each scan and assign it and arbitrary x coordinate (1st scan is 0, 2nd is 1 etc)
         for x in range(self.num_scans):
-            self.xyz_array[x, :, self._x_idx] = x
+            self.xyz_array[:, x, self.x_idx] = x
 
         # Iterate through each scan angle and give an arbitrary y coordinate
         for y in range(self._num_pts):
             # Reverse indices so that we start with bottom of array
             # > np index starts top left as 0,0 but we want to set 0,0 as bottom left so that y increase up the rows
             idx = self._num_pts - (y + 1)
-            self.xyz_array[idx, :, self._y_idx] = y
+            self.xyz_array[idx, :, self.y_idx] = y
+
+        if isinstance(self.mess_inst, MessagesGUI):
+            self.mess_inst.message('XYZ array created successfully!!!')
+        else:
+            print('XYZ array created successfully!!!')
+
+        self.flatten_array()
+
+    def generate_LAS(self, filename):
+        """Create a .las file, or object to be saved"""
+        try:
+            filename = filename.split('.')[0] + '.LAS'
+            headerobj = self.__make_header__()
+            fileobj = lasfile.File(filename, mode='w', header=headerobj)
+            fileobj.X = self.flat_array[self.x_idx, :]
+            fileobj.Y = self.flat_array[self.y_idx, :]
+            fileobj.Z = self.flat_array[self.z_idx, :]
+            fileobj.Intensity = self.flat_array[self.temp_idx, :]
+            fileobj.close()
+        except AttributeError as err:
+            self.mess_inst.message('AttributeError [{}] when attempting to generate .LAS file'.format(err))
+        except TypeError as err:
+            self.mess_inst.message('TypeError [{}] when attempting to generate .LAS file'.format(err))
+
+    def __make_header__(self):
+        """Create header object for .LAS format and return it"""
+        header = lashead.Header(point_format=0)
+
+        return header
 
 
 def process_data(lidar_data, temps_dist, scan_speeds, info=ProcessInfo(), q_dat=None):
@@ -186,13 +304,49 @@ def process_data(lidar_data, temps_dist, scan_speeds, info=ProcessInfo(), q_dat=
     return temps_dist, raw_lid
 
 
+def find_lsp_angle(angle, distance):
+    """Finds associated LSP angle which will coincide with a lidar data point for angle and distance"""
+    # Correct lidar angle (may need to multiplay by -1
+    angle_corr = angle + ProcessInfo.LIDAR_ANGLE_OFFSET
+
+    # Calculate angle used for trig calculations
+    angle_corr = 90 - angle_corr
+
+    # Find distance between LSP and object (cosine rule)
+    therm_dist = np.sqrt(distance**2 + ProcessInfo.LIDAR_LSP_DIST_VERT**2 -
+                         (2 * distance * ProcessInfo.LIDAR_LSP_DIST_VERT * np.cos(np.deg2rad(angle_corr))))
+
+    # Find thermal angle (sine rule)
+    therm_angle = np.rad2deg(np.arcsin(distance * np.sin(np.deg2rad(angle_corr)) / therm_dist))
+    # Check with cosine rule
+    therm_angle_cos = np.rad2deg(np.arccos(distance**2 + ProcessInfo.LIDAR_LSP_DIST_VERT**2 - therm_angle**2
+                                 / (2*distance*ProcessInfo.LIDAR_LSP_DIST_VERT)))
+    if np.round(therm_angle, 1) != np.round(therm_angle_cos, 1):
+        print('Error!!! Cosine and Sine rules returning difference values for LSP angle')
+        return None
+    else:
+        print('Success!!! Cosine and Sine rules agree on angle')
+
+    # If we have an obtuse angle it needs to be converted from the -ve (np.arcsin/cos returns between -pi/2 and pi/2)
+    if therm_angle < 0:
+        therm_angle += 180
+
+    # Convert therm_angle to LSP angle (LSP angles defined as between -x and x so that 0 is the horizontal scan)
+    lsp_angle = (therm_angle - 90) * -1
+
+    return [lsp_angle, therm_dist]
+
+
+    # Need to convert back to proper thermal angle eventually (between -40 and 40)
+
+
 def scan_shift(scan_speeds, idx, movement_speed, info=ProcessInfo()):
     """Calculate the shift in scan line data needed to correct for instrument offset/movement speed"""
     # Need to think about when scan speed == 0, when we don't have a line of data. I think I should just remove these lines from the array, and shift everything up.
     # This divide by zero is what is ruining the data
     incr = info.INSTRUMENT_DIRECTION # Get increment from class (either +1 or -1 depending on instrument orientation)
 
-    time_taken = info.LIDAR_LSP_DIST / movement_speed
+    time_taken = info.LIDAR_LSP_DIST_HOR / movement_speed
 
     num_scans = len(scan_speeds)
     scan_time = 0

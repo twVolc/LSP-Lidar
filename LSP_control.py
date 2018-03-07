@@ -7,6 +7,34 @@ import time
 import numpy as np
 import scipy.io as sci
 
+
+class LSPInfo:
+    """Used by recv_bin_data()
+    Should be able to inherit this in SocketLSP to save writing things twice?"""
+    port = 1050         # LSP-HD listening port
+    ip = '10.1.10.100'  # LSP IP address (default=10.1.10.100)
+
+    current_mess_byte = b''  # Byte current message
+    current_mess = ''  # Holds any incomplete message
+    scan_message = None  # Will hold a scan binary message
+    message_incomplete = False  # Used to check if we need to receive more data
+
+    # Define important LSP-HD paramters
+    reconnect_delay = 6  # Allow 6 seconds before attempting reconnect
+    end_mess = '\r\x00'  # End of message bytes (<CR><NULL>)
+    end_mess_bytes = b'\r\0'  # End of message bytes (<CR><NULL>)
+    end_mess_len = len(end_mess)  # Length of end message, for extracting string in message
+    good_resp = b'RUP 0' + end_mess_bytes  # Reply code when all is good
+
+    # Define binary format string. Whitespace is ignored in format specifiers, but is included for clarity
+    encoding = 'utf-8'  # Encoding of ascii messages
+    bin_header_size = 7  # Data needed for header info
+    fmt_header = '=3c H h'  # HEader format
+    fmt_bin = '=3c H h 6H h 6h 6H 6h f 3H 29h 8f 43h 1000h 2c'  # Binary data format
+    bin_unpacker = struct.Struct(fmt_bin)  # Create structure from format string
+    bin_data_len = struct.calcsize(fmt_bin)  # How much data is expected from scan
+
+
 class SocketLSP:
     """Classs to interface with LSP -> send + recieve data -> parse data to useful output"""
     def __init__(self, hostIP, lspIP = '10.1.10.100'):
@@ -84,7 +112,7 @@ class SocketLSP:
     def recv_resp_simple(self, bytes=1024):
         """Simply recieve the message and return it, don't do anything to it"""
         mess = self.sock.recv(bytes)
-        print('Got message of length: %i byte(s)' % len(mess))
+        # print('Got message of length: %i byte(s)' % len(mess))
         return mess
 
     def recv_stream_resp(self):
@@ -93,7 +121,14 @@ class SocketLSP:
         while True:
             return_mess += self.recv_resp_simple(1)
             if return_mess[-2:] == self.end_mess_bytes:
-                mess_ascii = return_mess.decode(self.encoding)
+                # Sometimes we have overflow of data when attempting to stop stream - probably extra scan data we
+                # haven't picked up yet. So we try to decode it all, but if we hit an error we just decode the last
+                # few bytes which contain the message we are interested in
+                try:
+                    mess_ascii = return_mess.decode(self.encoding)
+                except UnicodeDecodeError as e:
+                    # print('Error decoding message: {}'.format(e))
+                    mess_ascii = return_mess[-7:].decode(self.encoding)
                 return_code = int(mess_ascii[-3])
                 if return_code == 0:
                     print('LSP response - all good!')
@@ -225,31 +260,6 @@ class SocketLSP:
             print('Warning!!! Expected message of length %i bytes but got message of %i bytes' % (len_mess, len(self.scan_message)))
         return unpacked_mess
 
-class LSPInfo:
-    """Used by recv_bin_data()
-    Should be able to inherit this in SocketLSP to save writing things twice?"""
-    port = 1050  # LSP-HD listening port
-
-    current_mess_byte = b''  # Byte current message
-    current_mess = ''  # Holds any incomplete message
-    scan_message = None  # Will hold a scan binary message
-    message_incomplete = False  # Used to check if we need to receive more data
-
-    # Define important LSP-HD paramters
-    reconnect_delay = 6  # Allow 6 seconds before attempting reconnect
-    end_mess = '\r\x00'  # End of message bytes (<CR><NULL>)
-    end_mess_bytes = b'\r\0'  # End of message bytes (<CR><NULL>)
-    end_mess_len = len(end_mess)  # Length of end message, for extracting string in message
-    good_resp = b'RUP 0' + end_mess_bytes  # Reply code when all is good
-
-    # Define binary format string. Whitespace is ignored in format specifiers, but is included for clarity
-    encoding = 'utf-8'  # Encoding of ascii messages
-    bin_header_size = 7  # Data needed for header info
-    fmt_header = '=3c H h'  # HEader format
-    fmt_bin = '=3c H h 6H h 6h 6H 6h f 3H 29h 8f 43h 1000h 2c'  # Binary data format
-    bin_unpacker = struct.Struct(fmt_bin)  # Create structure from format string
-    bin_data_len = struct.calcsize(fmt_bin)  # How much data is expected from scan
-
 
 def recv_bin_data(sock):
     """Receive binary message - function rather than class  - for multiprocessing"""
@@ -299,6 +309,10 @@ class ProcessLSP:
         self.end_temp_idx = -2          # Index to stop extracting temperature
         self.scan_speed_idx = 30        # Index of scan speed in unpacked binary message
 
+        # Spot width specs
+        self.spot_width_close = 12e-3   # Spot width (m) at close distances (<1.2mm for LSP 6)
+        self.spot_width_scalar = 0.01   # Scalar used to find spot width from distance
+
     def extract_temp_bin(self, mess):
         """Extracts scan temperatures from message tuple and converts to actual temperature"""
         temperatures = np.asarray(mess[self.start_temp_idx:self.end_temp_idx])  # Convert to numpy array
@@ -310,11 +324,13 @@ class ProcessLSP:
         scan_speed = mess[self.scan_speed_idx]
         return scan_speed
 
+    @staticmethod
     def save_scan(self, filename, data_array):
         with open(filename, 'wb') as f:
             f.write(data_array)
         print('Data saved!!')
 
+    @staticmethod
     def read_array(self, filename):
         """Read in the numpy temperature file and return array"""
         extension = filename.split('.')[-1]     # Get file extension
@@ -327,10 +343,20 @@ class ProcessLSP:
             array = None
         return array
 
+    def calc_spot_size(self, distance):
+        """Calculates the spot size of the temperature measurement based on distance to object and LSP specs
+        All work in metres"""
+        if distance < 1.2:
+            return self.spot_width_close
+        else:
+            return distance * self.spot_width_scalar
+
+
+
 if __name__ == "__main__":
     # Set up comms and processing objects
     lsp_processor = ProcessLSP()            # Instantiate object to process data
-    lsp_comms = SocketLSP('10.1.10.1')      # Instantiate communications object
+    lsp_comms = SocketLSP(LSPInfo.ip)       # Instantiate communications object
     lsp_comms.init_comms()
     # recv_thread = threading.Thread(target=lsp.recv_resp, args=())
     # recv_thread.start()
@@ -339,6 +365,7 @@ if __name__ == "__main__":
     # ------------------
     # single scan tests
     print(message)
+
     lsp_comms.req_scan_bin()
     message = lsp_comms.recv_resp_simple(5000)
     print(message)
@@ -347,7 +374,7 @@ if __name__ == "__main__":
     print(unpacked_mess)
 
     extracted_temp = lsp_processor.extract_temp_bin(unpacked_mess)
-    print(extracted_temp)
+    # print(extracted_temp)
     print(unpacked_mess[-2:])
     # ----------------------
 
@@ -371,6 +398,9 @@ if __name__ == "__main__":
         lsp_comms.recv_bin_data()   # Receive data
 
         print(lsp_comms.scan_message)
+
+        unpacked_mess = lsp_comms.parse_mess_bin()
+        print(lsp_processor.extract_temp_bin(unpacked_mess))
 
     # Elapsed time
     print('Elapsed time for %i scans: %.2f' % (num_scans, time.time()-start_time))
