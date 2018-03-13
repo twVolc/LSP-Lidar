@@ -5,7 +5,7 @@
 # handle_data() is the main function to run, this starts and controls acquisitions
 
 from LSP_control import *
-from server import Instruments, SocketServ
+from server import Instruments, SocketServ, SocketLidStop
 import numpy as np
 import scipy.io as sci
 import datetime
@@ -47,6 +47,9 @@ def handle_data(_q=queue.Queue()):
     serv_Lidar = SocketServ(Instruments.SERVER_LIDAR)
     size_lid = serv_Lidar.num_pts_recv * Instruments.NUM_LIDAR_PTS      # Size of a single dataset packaged by serv_Lidar
     num_lidar_iter = ArrayInfo.NUM_LIDAR_ACQ / serv_Lidar.num_pts_recv  # Number of iterations before we fill lidar space for a single LSP scan in our numpy array
+
+    # Create lidar socket for stopping instrument
+    serv_lidar_stop = SocketLidStop()
 
     # Send initial Hello message and check response
     lsp_comms.init_comms()
@@ -137,15 +140,16 @@ def handle_data(_q=queue.Queue()):
                 exit_q.put(-1)  # Terminate LSP thread
                 save_thread.join()
                 lsp_thread.join()
-                os.kill(lidar_control.pid, signal.CTRL_C_EVENT)   # Stop lidar
-                lsp_comms.stop_stream_bin()                 # Stop LSP
-                resp = lsp_comms.recv_stream_resp()       # Receive response to stop LSP
+                serv_lidar_stop.stop_lid()              # Stop lidar
+                lsp_comms.stop_stream_bin()             # Stop LSP
+                resp = lsp_comms.recv_stream_resp()     # Receive response to stop LSP
                 if resp != 0:
                     print('Error stopping stream. Closing socket.')
                 else:
                     print('All worked well. Closing socket.')
                 lsp_comms.close_socket()                    # Close socket with LSP even if we haven't stopped binary stream
-
+                return
+                # os.kill(lidar_control.pid, signal.CTRL_C_EVENT)   # Stop lidar
 
 
         # # For saving data

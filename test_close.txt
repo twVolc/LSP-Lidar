@@ -1,0 +1,52 @@
+Connected to socket on port: 50011
+No Data!!!
+n:0
+No Data!!!
+n:0
+No Data!!!
+n:0
+No Data!!!
+n:0
+No Data!!!
+n:0
+No Data!!!
+n:0
+Got data
+n:1Got data
+n:1Got data
+n:1Got data
+n:1All should be good. Received: stop Connected to socket on port: 50111
+No Data!!!
+n:0
+No Data!!!
+n:0
+No Data!!!
+n:0
+Got data
+n:1Got data
+n:1Got data
+n:1Got data
+n:1All should be good. Received: stop$Connected to socket on port: 50126
+Got data
+n:1Got data
+n:1Got data
+n:1Got data
+n:1All should be good. Received: stopConnected to socket on port: 50257
+No Data!!!
+n:0
+No Data!!!
+n:0
+Got data
+n:1Got data
+n:1Got data
+n:1Got data
+n:1All should be good. Received: stopConnected to socket on port: 50274
+No Data!!!
+n:0
+No Data!!!
+n:0
+Got data
+n:1Got data
+n:1Got data
+n:1Got data
+n:1All should be good. Received: stop4

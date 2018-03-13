@@ -71,6 +71,9 @@ class MainGUI(ttk.Frame):
         self.messages = MessagesGUI(frame)
         self.messages.frame.pack(side=tk.RIGHT, fill=tk.BOTH)
 
+        self.lsp_config = LSPConfigGUI(frame)
+        self.lsp_config.frame.pack(side=tk.TOP)
+
         # 3D plot
         self.plt_3d = Plot3DGUI(frame)
         self.plt_3d.frame.pack(side=tk.BOTTOM)

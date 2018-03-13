@@ -90,6 +90,42 @@ class MessagesGUI:
         self.label.configure(text=self.message_holder)
 
 
+class LSPConfigGUI:
+    """Class to build LSP configuration frame for GUI"""
+    def __init__(self, holder_frame):
+        self.setts = SettingsGUI()
+        self.frame = tk.LabelFrame(holder_frame, text='LSP Configuration', relief=tk.GROOVE, borderwidth=2,
+                                   font=self.setts.mainFontBold)
+
+        lab = tk.Label(self.frame, text='Emissivity:', font=self.setts.mainFont)
+        lab.grid(row=0, column=0)
+
+        self.min_emiss = 0.2
+        self.max_emis = 1.0
+        self.emiss = tk.DoubleVar()
+        self.emiss = tk.StringVar()
+        self.emiss.set('1.0')
+        self.emiss_box = tk.Spinbox(self.frame, textvariable=self.emiss, font=self.setts.mainFont)
+        self.emiss_box.configure(from_=0.2, to=1.0, increment=0.01, width=4)
+        self.emiss_box.grid(row=0, column=1)
+
+        self.update_butt = tk.Button(self.frame, text='Update Device', font=self.setts.mainFontBold,
+                                     command=self.update_LSP)
+        self.update_butt.grid(row=1, column=1)
+
+    def get_emis(self):
+        """Retrieve emissivity"""
+        emiss = float(self.emiss.get())
+        if emiss > self.max_emis:
+            emiss = self.max_emis
+        elif emiss < self.min_emiss:
+            emiss = self.min_emiss
+        return emiss
+
+    def update_LSP(self):
+        emiss = self.get_emis()
+
+
 class FileSelector:
     """Class to build frame for selecting a file path
     -> Label for title, label for pathname, button for file selection"""

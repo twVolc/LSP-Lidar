@@ -131,9 +131,9 @@ class SocketLSP:
                     mess_ascii = return_mess[-7:].decode(self.encoding)
                 return_code = int(mess_ascii[-3])
                 if return_code == 0:
-                    print('LSP response - all good!')
+                    print('[LSP] Response all good!')
                 else:
-                    print('LSP-HD error code: %i' % return_code)
+                    print('[LSP] Error code: %i' % return_code)
                 return return_code
 
     def recv_bin_data(self):
@@ -151,7 +151,7 @@ class SocketLSP:
         error_code = header[-1]
         # If bad error code, close socket and return
         if error_code != 0:
-            print('LSP providing error code of %i. Communication terminated!' % error_code)
+            print('[LSP] Error code of %i. Communication terminated!' % error_code)
             self.close_socket()
             return
 
@@ -260,6 +260,34 @@ class SocketLSP:
             print('Warning!!! Expected message of length %i bytes but got message of %i bytes' % (len_mess, len(self.scan_message)))
         return unpacked_mess
 
+    def set_emissivity(self, emis):
+        """Send command to LSP to set emissivity"""
+        message = b'SEP ' + str(emis).encode() + self.end_mess_bytes
+        print('Setting emissivity: {}'.format(emis))
+        self.sock.sendall(message)
+
+    def set_emissivity_resp(self):
+        """Receive response from setting the emissivity"""
+        return_mess = b''
+        while True:
+            return_mess += self.recv_resp_simple(1)
+            if return_mess[-2:] == self.end_mess_bytes:
+                # Sometimes we have overflow of data when attempting to stop stream - probably extra scan data we
+                # haven't picked up yet. So we try to decode it all, but if we hit an error we just decode the last
+                # few bytes which contain the message we are interested in
+                # try:
+                #     mess_ascii = return_mess.decode(self.encoding)
+                # except UnicodeDecodeError as e:
+                #     mess_ascii = return_mess[-7:].decode(self.encoding)
+                start_idx = return_mess.rfind(b'REP')   # Find start of response
+                mess_ascii = return_mess[start_idx:]    # Extract response
+                return_code = int(mess_ascii[4:-2])     # Extract return code and convert to integer
+
+                if return_code == 0:
+                    print('[LSP] Response: emissivity set!')
+                else:
+                    print('[LSP] Set emissivity error code: %i' % return_code)
+                return return_code
 
 def recv_bin_data(sock):
     """Receive binary message - function rather than class  - for multiprocessing"""
@@ -276,7 +304,7 @@ def recv_bin_data(sock):
     error_code = header[-1]
     # If bad error code, close socket and return
     if error_code != 0:
-        print('LSP providing error code of %i. Communication terminated!' % i)
+        print('[LSP] Error code of %i. Communication terminated!' % i)
         sock.close()
         return
 
@@ -324,13 +352,11 @@ class ProcessLSP:
         scan_speed = mess[self.scan_speed_idx]
         return scan_speed
 
-    @staticmethod
     def save_scan(self, filename, data_array):
         with open(filename, 'wb') as f:
             f.write(data_array)
         print('Data saved!!')
 
-    @staticmethod
     def read_array(self, filename):
         """Read in the numpy temperature file and return array"""
         extension = filename.split('.')[-1]     # Get file extension

@@ -211,6 +211,99 @@ class SocketServ:
         return data
 
 
+class SocketLidStop:
+    """Server for local machine communications with lidar to shut down lidar on command"""
+    def __init__(self, host='localhost'):
+
+        self._queue = Queue()   # Instantiate Queue object
+        self.stop_q = Queue()   # Instantiate Queue object for knowing when to stop lidar
+        self.host = host
+        self.conn = None        # Connection
+        self.addr = None        # Address of connection
+
+        # Create network directory to hold anything necessary
+        self.work_dir = '.\\network\\'
+        if not os.path.exists(self.work_dir):
+            os.makedirs(self.work_dir)
+
+        # Create socket
+        self.sock = None
+        self.connected = False
+        status = self.create_socket()
+
+        # Bind to socket
+        if status == 0:
+            self.port = self.bind_to()
+
+
+        # Save port name
+        self.save_port()
+
+        # Listen for a connection and accept if it comes in - threaded so that we don't pause listening for connection
+        self._t_conn = Thread(target=self.get_connection, args=())
+        self._t_conn.daemon = True
+        self._t_conn.start()
+
+    def create_socket(self):
+        """Create socket object"""
+        try:
+            self.sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+            print('Socket created!')
+            return 0
+        except socket.error as e:
+            print('Error creating socket: %s' % e)
+            return -1
+
+    def bind_to(self):
+        """Bind socket"""
+        try:
+            self.sock.bind((self.host, 0))
+            self.connected = True
+            print('Bound to socket!')
+        except socket.gaierror as e:
+            self.connected = False
+            print("Address related error connecting to server: %s" % e)
+        except socket.error as e:
+            self.connected = False
+            print("Connection error: %s" % e)
+
+        if self.connected:
+            return self.sock.getsockname()[1]
+        else:
+            return -1
+
+    def close_socket(self):
+        """Close socket"""
+        self.sock.close()
+
+    def save_port(self):
+        """Save port number to local file so it can be accessed by other programs"""
+
+        line = 'port=%i' % self.port
+        save_path = self.work_dir + ('network_lidar_stop.cfg')
+
+        with open(save_path, 'w') as f:
+            f.write(line)
+
+    def get_connection(self):
+        """Wait for client connection and then accept it"""
+        mess_start = 'LIDAR: '
+        # Wait for connection
+        print(mess_start + 'Listening on port %i...' % self.port)
+        self.sock.listen(1)
+
+        # Accept connection
+        self.conn, self.addr = self.sock.accept()
+        print(mess_start + 'Got connection from %s' % self.addr[0])
+        self._queue.put(self.conn)
+
+    def stop_lid(self):
+        """Send sommand to stop lidar"""
+        print('Lidar: Stopping lidar from <ServLidStop>')
+        conn = self._queue.get()
+        conn.send(b'stop')
+
+
 if __name__ == '__main__':
     serv_Lidar = SocketServ(Instruments.SERVER_LIDAR)
     while 1:

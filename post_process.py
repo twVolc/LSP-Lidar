@@ -17,11 +17,12 @@ from laspy import header as lashead
 class ProcessInfo(ArrayInfo):
     """Contains properties used in post-processing data
     -> User may need to change these properties"""
-    LIDAR_LSP_DIST_HOR = 0.11   # Horizontal Distance between Lidar and LSP acquisition positions (metres)
+    LIDAR_LSP_DIST_HOR = 0.0    # Horizontal Distance between Lidar and LSP acquisition positions (metres)
     LIDAR_LSP_DIST_VERT = 0.11  # Vertical Distance between Lidar and LSP acquisition positions (metres)
     INSTRUMENT_SPEED = 0.05     # Speed of movement (m/s)
     INSTRUMENT_DIRECTION = 1    # Scan direction (LSP first=1, Lidar first=-1)
-    SHIFT_SCANS = True          # Boolean for whether or not we apply the movement shift (True is generally required)
+    SHIFT_SCANS = False         # Boolean for whether or not we apply the movement shift (True is generally required) In new system the  shift isn't necessary as the scans are alligned
+    ADJ_ANGLE = False           # Boolean for whether we should adjust the Lidar angle (and distance) for offset between LSP and Lidar
 
     # Define array to hold all of the data
     NUM_Z_DIM = 3           # Number of z-dimensions (Currently: Temperature/Distance/Angle)
@@ -197,6 +198,12 @@ class DataProcessor:
 
         return header
 
+def process_data_alligned(lidar_data, temps_dist, scan_speeds, info=ProcessInfo(), q_dat=None):
+    """Similar to process_data() but for new setup where lidar and LSP scan planes are alligned
+    -> Removes any blank lines of LSP data
+    -> Positions lidar data in main array, scaling distance to temperature distance if necessary (small offset between LSP and Lidar)
+    -> Interpolates lidar data
+    -> returns main array"""
 
 def process_data(lidar_data, temps_dist, scan_speeds, info=ProcessInfo(), q_dat=None):
     """Main processing function
@@ -253,6 +260,7 @@ def process_data(lidar_data, temps_dist, scan_speeds, info=ProcessInfo(), q_dat=
 
             # PLACING LIDAR DATA IN ARRAY > DEPENDENT ON REQUESTED METHOD
             if info.TIME_INTERP:
+                # NOT RECOMMENDED!!!!
                 if corr_scan == prev_scan:
                     corr_scan += 1          # Correct the scan to next line if we have already used line
 
@@ -273,7 +281,16 @@ def process_data(lidar_data, temps_dist, scan_speeds, info=ProcessInfo(), q_dat=
                     if (angles[i] + 1) > info.LSP_MAX_ANGLE or (angles[i] + 1) < info.LSP_MIN_ANGLE:
                         EMPTY_LID_FLAG[scan] = 1  # Flag that we have no data for this scan
                         continue    # Ignore measurements outside of the FOV of the LSP
-                    idx = np.argmin(abs(info.LSP_ANGLES - angles[i]))
+
+                    if info.ADJ_ANGLE:
+                        return_val = find_lsp_angle(angles[i], distances[i], info)
+                        angle = return_val[0]
+                        distance = return_val[1]
+                    else:
+                        angle = angles[i]
+                        distance = distances[i]
+
+                    idx = np.argmin(abs(info.LSP_ANGLES - angle))
                     # print(idx)
 
                     # Assigning distance value with padding (5 temperature points are assigned the same distance)
@@ -281,11 +298,11 @@ def process_data(lidar_data, temps_dist, scan_speeds, info=ProcessInfo(), q_dat=
                     # Values at edge of FOV are padded differently (don't need to have specific assignments for upper
                     # indices of array because over assignment of indices just gets ignored in python
                     if idx < pad:
-                        temps_dist[corr_scan, 0:(idx+pad+1), info.DIST_IDX] = distances[i]    # Assign distance value
-                        temps_dist[corr_scan, 0:(idx+pad+1), info.ANGLE_IDX] = angles[i]      # Assign angle value
+                        temps_dist[corr_scan, 0:(idx+pad+1), info.DIST_IDX] = distance    # Assign distance value
+                        temps_dist[corr_scan, 0:(idx+pad+1), info.ANGLE_IDX] = angle      # Assign angle value
                     else:
-                        temps_dist[corr_scan, (idx-pad):(idx+pad+1), info.DIST_IDX] = distances[i]  # Assign distance value
-                        temps_dist[corr_scan, (idx-pad):(idx+pad+1), info.ANGLE_IDX] = angles[i]    # Assign angle value
+                        temps_dist[corr_scan, (idx-pad):(idx+pad+1), info.DIST_IDX] = distance  # Assign distance value
+                        temps_dist[corr_scan, (idx-pad):(idx+pad+1), info.ANGLE_IDX] = angle    # Assign angle value
 
             else:
                 print('Error! Processing method [in <class>ProcessInfo] incorrectly defined.')
@@ -304,23 +321,23 @@ def process_data(lidar_data, temps_dist, scan_speeds, info=ProcessInfo(), q_dat=
     return temps_dist, raw_lid
 
 
-def find_lsp_angle(angle, distance):
+def find_lsp_angle(angle, distance, info=ProcessInfo()):
     """Finds associated LSP angle which will coincide with a lidar data point for angle and distance"""
     # Correct lidar angle (may need to multiplay by -1
-    angle_corr = angle + ProcessInfo.LIDAR_ANGLE_OFFSET
+    angle_corr = angle + info.LIDAR_ANGLE_OFFSET
 
     # Calculate angle used for trig calculations
     angle_corr = 90 - angle_corr
 
     # Find distance between LSP and object (cosine rule)
-    therm_dist = np.sqrt(distance**2 + ProcessInfo.LIDAR_LSP_DIST_VERT**2 -
-                         (2 * distance * ProcessInfo.LIDAR_LSP_DIST_VERT * np.cos(np.deg2rad(angle_corr))))
+    therm_dist = np.sqrt(distance**2 + info.LIDAR_LSP_DIST_VERT**2 -
+                         (2 * distance * info.LIDAR_LSP_DIST_VERT * np.cos(np.deg2rad(angle_corr))))
 
     # Find thermal angle (sine rule)
     therm_angle = np.rad2deg(np.arcsin(distance * np.sin(np.deg2rad(angle_corr)) / therm_dist))
     # Check with cosine rule
-    therm_angle_cos = np.rad2deg(np.arccos(distance**2 + ProcessInfo.LIDAR_LSP_DIST_VERT**2 - therm_angle**2
-                                 / (2*distance*ProcessInfo.LIDAR_LSP_DIST_VERT)))
+    therm_angle_cos = np.rad2deg(np.arccos(distance**2 + info.LIDAR_LSP_DIST_VERT**2 - therm_angle**2
+                                 / (2*distance*info.LIDAR_LSP_DIST_VERT)))
     if np.round(therm_angle, 1) != np.round(therm_angle_cos, 1):
         print('Error!!! Cosine and Sine rules returning difference values for LSP angle')
         return None
