@@ -37,7 +37,8 @@ class LSPInfo:
 
 class SocketLSP:
     """Classs to interface with LSP -> send + recieve data -> parse data to useful output"""
-    def __init__(self, hostIP, lspIP = '10.1.10.100'):
+    def __init__(self, hostIP, lspIP = '10.1.10.100', gui_message=None):
+        self.gui_message = gui_message
         self.port = 1050            # LSP-HD listening port
         self.hostIP = hostIP
         self.lspIP = lspIP
@@ -75,10 +76,16 @@ class SocketLSP:
         """Create a socket"""
         try:
             self.sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-            print('Socket created!')
+            if self.gui_message is not None:
+                self.gui_message.message('[LSP] Socket created!')
+            else:
+                print('[LSP] Socket created!')
             return 0
         except socket.error as e:
-            print('Error creating socket: %s' % e)
+            if self.gui_message is not None:
+                self.gui_message.message('[LSP] Error creating socket: %s' % e)
+            else:
+                print('[LSP] Error creating socket: %s' % e)
             return -1
 
     def connect_to(self):
@@ -86,18 +93,30 @@ class SocketLSP:
         try:
             self.sock.connect((self.lspIP, self.port))
             self.connected = True
-            print('Got connection!!!!')
+            if self.gui_message is not None:
+                self.gui_message.message('[LSP] Got connection!!!!')
+            else:
+                print('[LSP] Got connection!!!!')
         except socket.gaierror as e:
             self.connected = False
-            print("Address related error connecting to server: %s" % e)
+            if self.gui_message is not None:
+                self.gui_message.message("[LSP] Address related error connecting to server: %s" % e)
+            else:
+                print("[LSP] Address related error connecting to server: %s" % e)
         except socket.error as e:
             self.connected = False
-            print("Connection error: %s" % e)
+            if self.gui_message is not None:
+                self.gui_message.message("[LSP] Connection error: %s" % e)
+            else:
+                print("[LSP] Connection error: %s" % e)
 
     def close_socket(self):
         """Close socket"""
         self.sock.close()
-        print('Closed socket!!!')
+        if self.gui_message is not None:
+            self.gui_message.message('[LSP] Closed socket!!!')
+        else:
+            print('[LSP] Closed socket!!!')
 
     def attempt_reconnect(self):
         """Attempt to reconnect to dropped server"""
@@ -121,19 +140,32 @@ class SocketLSP:
         while True:
             return_mess += self.recv_resp_simple(1)
             if return_mess[-2:] == self.end_mess_bytes:
+                start_idx = return_mess.rfind(b'RUP')  # Find start of response
+                if start_idx < 0:
+                    continue
+                cut_mess = return_mess[start_idx:]
+                split_mess = cut_mess.split()
+                return_code = int(split_mess[1])
+
                 # Sometimes we have overflow of data when attempting to stop stream - probably extra scan data we
                 # haven't picked up yet. So we try to decode it all, but if we hit an error we just decode the last
                 # few bytes which contain the message we are interested in
-                try:
-                    mess_ascii = return_mess.decode(self.encoding)
-                except UnicodeDecodeError as e:
-                    # print('Error decoding message: {}'.format(e))
-                    mess_ascii = return_mess[-7:].decode(self.encoding)
-                return_code = int(mess_ascii[-3])
-                if return_code == 0:
-                    print('[LSP] Response all good!')
+                # try:
+                #     mess_ascii = return_mess.decode(self.encoding)
+                # except UnicodeDecodeError as e:
+                #     # print('Error decoding message: {}'.format(e))
+                #     mess_ascii = return_mess[-7:].decode(self.encoding)
+                # return_code = int(mess_ascii[-3])
+                if self.gui_message is not None:
+                    if return_code == 0:
+                        self.gui_message.message('[LSP] Response all good!')
+                    else:
+                        self.gui_message.message('[LSP] Error code: %i' % return_code)
                 else:
-                    print('[LSP] Error code: %i' % return_code)
+                    if return_code == 0:
+                        print('[LSP] Response all good!')
+                    else:
+                        print('[LSP] Error code: %i' % return_code)
                 return return_code
 
     def recv_bin_data(self):
@@ -263,7 +295,10 @@ class SocketLSP:
     def set_emissivity(self, emis):
         """Send command to LSP to set emissivity"""
         message = b'SEP ' + str(emis).encode() + self.end_mess_bytes
-        print('Setting emissivity: {}'.format(emis))
+        if self.gui_message is not None:
+            self.gui_message.message('[LSP] Setting emissivity: {}'.format(emis))
+        else:
+            print('[LSP] Setting emissivity: {}'.format(emis))
         self.sock.sendall(message)
 
     def set_emissivity_resp(self):
@@ -283,11 +318,56 @@ class SocketLSP:
                 mess_ascii = return_mess[start_idx:]    # Extract response
                 return_code = int(mess_ascii[4:-2])     # Extract return code and convert to integer
 
-                if return_code == 0:
-                    print('[LSP] Response: emissivity set!')
+                if self.gui_message is not None:
+                    if return_code == 0:
+                        self.gui_message.message('[LSP] Response: emissivity set!')
+                    else:
+                        self.gui_message.message('[LSP] Set emissivity error code: %i' % return_code)
                 else:
-                    print('[LSP] Set emissivity error code: %i' % return_code)
+                    if return_code == 0:
+                        print('[LSP] Response: emissivity set!')
+                    else:
+                        print('[LSP] Set emissivity error code: %i' % return_code)
                 return return_code
+
+    def query_emissivity(self):
+        """Ask LSP for current emissivity setting"""
+        if self.gui_message is not None:
+            self.gui_message.message('[LSP] Querying emissivity...')
+        else:
+            print('[LSP] Querying emissivity...')
+
+        message = b'SEV' + self.end_mess_bytes
+        self.sock.sendall(message)
+
+        return_mess = b''
+        while True:
+            return_mess += self.recv_resp_simple(1)
+            if return_mess[-2:] == self.end_mess_bytes:
+                start_idx = return_mess.rfind(b'REV')   # Find start of response
+                if start_idx < 0:
+                    continue
+                mess_ascii = return_mess[start_idx:]    # Extract response
+                split_mess = mess_ascii.split()
+                return_code = split_mess[1]     # Extract return code and convert to integer
+                emiss = split_mess[2]
+
+                if self.gui_message is not None:
+                    self.gui_message.message('[LSP] Emissivity set at: {}'.format(float(emiss)))
+                else:
+                    print('[LSP] Emissivity set at: {}'.format(float(emiss)))
+                return
+
+    # def set_scan_speed(self, speed):
+    #     """Send command to LSP to set scan speed via software control"""
+    #     mess = '[LSP] Setting scan speed: {} Hz'.format(speed)
+    #     if self.gui_message is not None:
+    #         self.gui_message.message(mess)
+    #     else:
+    #         print(mess)
+
+
+
 
 def recv_bin_data(sock):
     """Receive binary message - function rather than class  - for multiprocessing"""

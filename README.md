@@ -23,6 +23,3 @@ to maintain code readability
 > process_lidar contains a class to process lidar data - basically obsolete now
 
 > main is a general program which in the end will perform central functions, but currently is quite basic - almost obsolete now
-
-STILL TO DO!
-> Write method in LSPControl for setting emissivity - add option in GUI

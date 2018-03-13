@@ -30,10 +30,10 @@ class ArrayInfo:
     NUM_SCANS = 1000                        # Number fo LSP scans saved to single file
 
 
-def handle_data(_q=queue.Queue()):
+def handle_data(_q=queue.Queue(), messages=None):
     """Function to do all of the data handling during acquisition for both the LSP and RPLIDAR"""
     # DIRECTORY SETUP FOR DATA STORAGE
-    data_path = '.\\'
+    data_path = '.\\Data\\'
     date_dir = datetime.datetime.now().strftime('%Y-%m-%d')
     full_dir_path = data_path + date_dir + '\\'             # Directory to save data
     if not os.path.exists(full_dir_path):
@@ -41,22 +41,25 @@ def handle_data(_q=queue.Queue()):
 
     # Instantiate LSP object for communicating with LSP
     lsp_processor = ProcessLSP()  # Instantiate object to process data
-    lsp_comms = SocketLSP('10.1.10.1')  # Instantiate communications object
+    lsp_comms = SocketLSP('10.1.10.1', gui_message=messages)  # Instantiate communications object
 
     # Create Lidar socket object which automatically opens a socket and tries to receive data from ultra_simple.exe
-    serv_Lidar = SocketServ(Instruments.SERVER_LIDAR)
+    serv_Lidar = SocketServ(Instruments.SERVER_LIDAR, gui_message=messages)
     size_lid = serv_Lidar.num_pts_recv * Instruments.NUM_LIDAR_PTS      # Size of a single dataset packaged by serv_Lidar
     num_lidar_iter = ArrayInfo.NUM_LIDAR_ACQ / serv_Lidar.num_pts_recv  # Number of iterations before we fill lidar space for a single LSP scan in our numpy array
 
     # Create lidar socket for stopping instrument
-    serv_lidar_stop = SocketLidStop()
+    serv_lidar_stop = SocketLidStop(gui_message=messages)
 
     # Send initial Hello message and check response
     lsp_comms.init_comms()
     message = lsp_comms.recv_resp()
     message_list = message.split(' ')
     if message_list[1] != '0':
-        print('Error code [%s] returned by LSP. Closing connections...' % message_list[1])
+        if messages is not None:
+            messages.message('Error code [%s] returned by LSP. Closing connections...' % message_list[1])
+        else:
+            print('Error code [%s] returned by LSP. Closing connections...' % message_list[1])
         lsp_comms.close_socket()
         serv_Lidar.close_socket()
         return
@@ -65,7 +68,10 @@ def handle_data(_q=queue.Queue()):
     lsp_comms.req_stream_bin()
     resp = lsp_comms.recv_stream_resp()
     if resp != 0:
-        print('Error code [%i] returned by LSP. Closing connections...' % resp)
+        if messages is not None:
+            messages.message('Error code [%i] returned by LSP. Closing connections...' % resp)
+        else:
+            print('Error code [%i] returned by LSP. Closing connections...' % resp)
         lsp_comms.close_socket()
         serv_Lidar.close_socket()
         return
@@ -144,9 +150,15 @@ def handle_data(_q=queue.Queue()):
                 lsp_comms.stop_stream_bin()             # Stop LSP
                 resp = lsp_comms.recv_stream_resp()     # Receive response to stop LSP
                 if resp != 0:
-                    print('Error stopping stream. Closing socket.')
+                    if messages is not None:
+                        messages.message('[LSP] Error stopping stream. Closing socket.')
+                    else:
+                        print('[LSP] Error stopping stream. Closing socket.')
                 else:
-                    print('All worked well. Closing socket.')
+                    if messages is not None:
+                        messages.message('[LSP] All worked well. Closing socket.')
+                    else:
+                        print('[LSP] All worked well. Closing socket.')
                 lsp_comms.close_socket()                    # Close socket with LSP even if we haven't stopped binary stream
                 return
                 # os.kill(lidar_control.pid, signal.CTRL_C_EVENT)   # Stop lidar

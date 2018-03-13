@@ -54,7 +54,8 @@ def recv_data(_q, fmt, float_idxs, num_pts_recv):
 
 class SocketServ:
     """Server for local machine communications with programs acquiring data from Lidar and/or LSP"""
-    def __init__(self, instrument, host='localhost'):
+    def __init__(self, instrument, host='localhost', gui_message=None):
+        self.gui_message = gui_message  # If not None this should be passed a MessagesGUI instance to send messages to
         self.num_pts_recv = 1           # Number of lidar datasets to receive and package in one go
         # Calculate indices where lidar angles (floats) are located, for converting back to float later
         self.float_idxs = np.arange(Instruments.LIDAR_ANGLE_IDX, Instruments.NUM_LIDAR_PTS * self.num_pts_recv,
@@ -108,10 +109,16 @@ class SocketServ:
         """Create socket object"""
         try:
             self.sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-            print('Socket created!')
+            if self.gui_message is not None:
+                self.gui_message.message('[LIDAR] Socket created!')
+            else:
+                print('[LIDAR] Socket created!')
             return 0
         except socket.error as e:
-            print('Error creating socket: %s' % e)
+            if self.gui_message is not None:
+                self.gui_message.message('[LIDAR] Error creating socket: %s' % e)
+            else:
+                print('[LIDAR] Error creating socket: %s' % e)
             return -1
 
     def bind_to(self):
@@ -119,13 +126,22 @@ class SocketServ:
         try:
             self.sock.bind((self.host, 0))
             self.connected = True
-            print('Bound to socket!')
+            if self.gui_message is not None:
+                self.gui_message.message('[LIDAR] Bound to socket!')
+            else:
+                print('[LIDAR] Bound to socket!')
         except socket.gaierror as e:
             self.connected = False
-            print("Address related error connecting to server: %s" % e)
+            if self.gui_message is not None:
+                self.gui_message.message("[LIDAR] Address related error connecting to server: %s" % e)
+            else:
+                print("[LIDAR] Address related error connecting to server: %s" % e)
         except socket.error as e:
             self.connected = False
-            print("Connection error: %s" % e)
+            if self.gui_message is not None:
+                self.gui_message.message("[LIDAR] Connection error: %s" % e)
+            else:
+                print("[LIDAR] Connection error: %s" % e)
 
         if self.connected:
             return self.sock.getsockname()[1]
@@ -155,18 +171,24 @@ class SocketServ:
     def get_connection(self):
         """Wait for client connection and then accept it"""
         if self.instrument == Instruments.SERVER_LIDAR:
-            mess_start = 'LIDAR: '
+            mess_start = '[LIDAR] '
         elif self.instrument == Instruments.SERVER_LSP:
-            mess_start = 'LSP: '
+            mess_start = '[LSP] '
         else:
             mess_start = 'Unknown: '
         # Wait for connection
-        print(mess_start + 'Listening on port %i...' % self.port)
+        if self.gui_message is not None:
+            self.gui_message.message(mess_start + 'Listening on port %i...' % self.port)
+        else:
+            print(mess_start + 'Listening on port %i...' % self.port)
         self.sock.listen(1)
 
         # Accept connection
         self.conn, self.addr = self.sock.accept()
-        print(mess_start + 'Got connection from %s' % self.addr[0])
+        if self.gui_message is not None:
+            self.gui_message.message(mess_start + 'Got connection from %s' % self.addr[0])
+        else:
+            print(mess_start + 'Got connection from %s' % self.addr[0])
         self._queue.put(self.conn)
 
     def recv_data(self, _q, fmt):
@@ -185,7 +207,10 @@ class SocketServ:
                 try:
                     data_stream += self.conn.recv(bytes_left)
                 except ConnectionResetError:
-                    print('Lidar closed connection. Data stream terminated')
+                    if self.gui_message is not None:
+                        self.gui_message.message('[LIDAR] Lidar closed connection. Data stream terminated')
+                    else:
+                        print('[LIDAR] Lidar closed connection. Data stream terminated')
                     return
                 bytes_left = size_mess - len(data_stream)
 
@@ -213,8 +238,9 @@ class SocketServ:
 
 class SocketLidStop:
     """Server for local machine communications with lidar to shut down lidar on command"""
-    def __init__(self, host='localhost'):
+    def __init__(self, host='localhost', gui_message=None):
 
+        self.gui_message = gui_message
         self._queue = Queue()   # Instantiate Queue object
         self.stop_q = Queue()   # Instantiate Queue object for knowing when to stop lidar
         self.host = host
@@ -248,10 +274,16 @@ class SocketLidStop:
         """Create socket object"""
         try:
             self.sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-            print('Socket created!')
+            if self.gui_message is not None:
+                self.gui_message.message('[LIDAR] Stop socket created!')
+            else:
+                print('[LIDAR] Stop socket created!')
             return 0
         except socket.error as e:
-            print('Error creating socket: %s' % e)
+            if self.gui_message is not None:
+                self.gui_message.message('[LIDAR] Error creating stop socket: %s' % e)
+            else:
+                print('[LIDAR] Error creating stop socket: %s' % e)
             return -1
 
     def bind_to(self):
@@ -259,13 +291,22 @@ class SocketLidStop:
         try:
             self.sock.bind((self.host, 0))
             self.connected = True
-            print('Bound to socket!')
+            if self.gui_message is not None:
+                self.gui_message.message('[LIDAR] Bound to stop socket!')
+            else:
+                print('[LIDAR] Bound to stop socket!')
         except socket.gaierror as e:
             self.connected = False
-            print("Address related error connecting to server: %s" % e)
+            if self.gui_message is not None:
+                self.gui_message.message("[LIDAR] Address related error connecting to server: %s" % e)
+            else:
+                print("[LIDAR] Address related error connecting to server: %s" % e)
         except socket.error as e:
             self.connected = False
-            print("Connection error: %s" % e)
+            if self.gui_message is not None:
+                self.gui_message.message("[LIDAR] Connection error: %s" % e)
+            else:
+                print("[LIDAR] Connection error: %s" % e)
 
         if self.connected:
             return self.sock.getsockname()[1]
@@ -287,19 +328,28 @@ class SocketLidStop:
 
     def get_connection(self):
         """Wait for client connection and then accept it"""
-        mess_start = 'LIDAR: '
+        mess_start = '[LIDAR] '
         # Wait for connection
-        print(mess_start + 'Listening on port %i...' % self.port)
+        if self.gui_message is not None:
+            self.gui_message.message(mess_start + 'Listening on port %i...' % self.port)
+        else:
+            print(mess_start + 'Listening on port %i...' % self.port)
         self.sock.listen(1)
 
         # Accept connection
         self.conn, self.addr = self.sock.accept()
-        print(mess_start + 'Got connection from %s' % self.addr[0])
+        if self.gui_message is not None:
+            self.gui_message.message(mess_start + 'Got connection from %s' % self.addr[0])
+        else:
+            print(mess_start + 'Got connection from %s' % self.addr[0])
         self._queue.put(self.conn)
 
     def stop_lid(self):
         """Send sommand to stop lidar"""
-        print('Lidar: Stopping lidar from <ServLidStop>')
+        if self.gui_message is not None:
+            self.gui_message.message('[LIDAR] Stopping lidar from <ServLidStop>')
+        else:
+            print('[LIDAR] Stopping lidar from <ServLidStop>')
         conn = self._queue.get()
         conn.send(b'stop')
 

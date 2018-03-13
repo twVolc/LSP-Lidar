@@ -9,6 +9,8 @@ import matplotlib.pyplot as plt
 from matplotlib.backends.backend_tkagg import FigureCanvasTkAgg, NavigationToolbar2TkAgg
 from mpl_toolkits import mplot3d
 
+from LSP_control import SocketLSP
+
 import numpy as np
 
 
@@ -92,7 +94,8 @@ class MessagesGUI:
 
 class LSPConfigGUI:
     """Class to build LSP configuration frame for GUI"""
-    def __init__(self, holder_frame):
+    def __init__(self, holder_frame, gui_message=None):
+        self.gui_message = gui_message
         self.setts = SettingsGUI()
         self.frame = tk.LabelFrame(holder_frame, text='LSP Configuration', relief=tk.GROOVE, borderwidth=2,
                                    font=self.setts.mainFontBold)
@@ -124,6 +127,26 @@ class LSPConfigGUI:
 
     def update_LSP(self):
         emiss = self.get_emis()
+
+        # Connect LSP and change emissivity
+        lsp_comms = SocketLSP('10.1.10.1', gui_message=self.gui_message)  # Instantiate communications object
+        lsp_comms.init_comms()
+        message = lsp_comms.recv_resp()
+        message_list = message.split(' ')
+        if message_list[1] != '0':
+            if self.gui_message is not None:
+                self.gui_message.message('Error code [%s] returned by LSP. Closing connections...' % message_list[1])
+            else:
+                print('Error code [%s] returned by LSP. Closing connections...' % message_list[1])
+            lsp_comms.close_socket()
+            return
+        lsp_comms.query_emissivity()
+
+        lsp_comms.set_emissivity(emiss)
+        return_code = lsp_comms.set_emissivity_resp()
+
+        lsp_comms.close_socket()
+
 
 
 class FileSelector:
