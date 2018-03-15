@@ -417,6 +417,9 @@ class ProcessLSP:
         self.end_temp_idx = -2          # Index to stop extracting temperature
         self.scan_speed_idx = 30        # Index of scan speed in unpacked binary message
 
+        self.apply_calibration = True   # Whether we want to recalibrate temperatures
+        self.calibration = [1.629244451846427, -17.899113249750750]
+
         # Spot width specs
         self.spot_width_close = 12e-3   # Spot width (m) at close distances (<1.2mm for LSP 6)
         self.spot_width_scalar = 0.01   # Scalar used to find spot width from distance
@@ -425,6 +428,11 @@ class ProcessLSP:
         """Extracts scan temperatures from message tuple and converts to actual temperature"""
         temperatures = np.asarray(mess[self.start_temp_idx:self.end_temp_idx])  # Convert to numpy array
         temperatures = temperatures / 10.0                                      # Convert to temperature
+
+        # Apply calibration
+        if self.apply_calibration:
+            temperatures = (temperatures - self.calibration[1]) / self.calibration[0]
+
         return temperatures
 
     def extract_scan_speed(self, mess):

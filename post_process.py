@@ -17,12 +17,12 @@ from laspy import header as lashead
 class ProcessInfo(ArrayInfo):
     """Contains properties used in post-processing data
     -> User may need to change these properties"""
-    LIDAR_LSP_DIST_HOR = 0.0    # Horizontal Distance between Lidar and LSP acquisition positions (metres)
-    LIDAR_LSP_DIST_VERT = 0.11  # Vertical Distance between Lidar and LSP acquisition positions (metres)
+    LIDAR_LSP_DIST_HOR = 0.0    # Horizontal Distance between Lidar and LSP acquisition positions (mm)
+    LIDAR_LSP_DIST_VERT = 11    # Vertical Distance between Lidar and LSP acquisition positions (mm)
     INSTRUMENT_SPEED = 0.05     # Speed of movement (m/s)
     INSTRUMENT_DIRECTION = 1    # Scan direction (LSP first=1, Lidar first=-1)
     SHIFT_SCANS = False         # Boolean for whether or not we apply the movement shift (True is generally required) In new system the  shift isn't necessary as the scans are alligned
-    ADJ_ANGLE = False           # Boolean for whether we should adjust the Lidar angle (and distance) for offset between LSP and Lidar
+    ADJ_ANGLE = True            # Boolean for whether we should adjust the Lidar angle (and distance) for offset between LSP and Lidar
 
     # Define array to hold all of the data
     NUM_Z_DIM = 3           # Number of z-dimensions (Currently: Temperature/Distance/Angle)
@@ -37,7 +37,7 @@ class ProcessInfo(ArrayInfo):
     LSP_ANGLES = np.linspace(0, _range_lsp_angle, ArrayInfo.len_lsp) - (_range_lsp_angle / 2)
     LSP_MIN_ANGLE = np.min(LSP_ANGLES) - 0.5    # Angles outside of this range are discarded
     LSP_MAX_ANGLE = np.max(LSP_ANGLES) + 0.5    # Angles outside of this range are discarded
-    LIDAR_ANGLE_OFFSET = -90                # Shift applied to lidar angles to match with LSP
+    LIDAR_ANGLE_OFFSET = 0                # Shift applied to lidar angles to match with LSP
 
     # Define method of interpolation for lidar measurements
     # Time interpolation takes data from lidar and spreads it evenly across contemporaneous LSP scan, regardless of scan angle
@@ -151,6 +151,10 @@ class DataProcessor:
         except TypeError as err:
            self.mess_inst.message('TypeError [{}] when attempting to save HDF5'.format(err))
 
+    def save_ASCII(self, filename):
+        """Save xyz coordinates and temperature as ASCII file in columns"""
+        pass
+
     def create_xyz_basic(self):
         """Generate a basic xyz array with no hold on speed, purely arbitrary distances"""
         if not self.__check_array__():
@@ -229,6 +233,7 @@ def process_data(lidar_data, temps_dist, scan_speeds, info=ProcessInfo(), q_dat=
         # Also need to interpolate between scans where no lidar data is found
         distances = lidar_data[scan, distance_idxs]
         angles = lidar_data[scan, angle_idxs] + info.LIDAR_ANGLE_OFFSET  # Apply offset to angles to match LSP
+        angles[angles >= 320] = (angles[angles >= 320] - 360)     # Possibly the adjustment needed here
         quality = lidar_data[scan, quality_idxs]
 
         # Find where data stops
@@ -258,7 +263,9 @@ def process_data(lidar_data, temps_dist, scan_speeds, info=ProcessInfo(), q_dat=
                 corr_scan = scan    # Just use scan index
                 prev_scan = -1      # Set as dummy so we don't edit corr scan later on
 
+            # --------------------------------------------------------------------------------------------------------
             # PLACING LIDAR DATA IN ARRAY > DEPENDENT ON REQUESTED METHOD
+            # -------------------------------------------------------------------------------------------------------
             if info.TIME_INTERP:
                 # NOT RECOMMENDED!!!!
                 if corr_scan == prev_scan:
@@ -274,6 +281,7 @@ def process_data(lidar_data, temps_dist, scan_speeds, info=ProcessInfo(), q_dat=
                     idx = (i + 1) * spread_dat                                  # Index for placing value
                     temps_dist[corr_scan, idx, info.DIST_IDX] = distances[i]  # Assign distance value
                     temps_dist[corr_scan, idx, info.ANGLE_IDX] = angles[i]    # Assign angle value
+            # -------------------------------------------------------------------------------------------------------
 
             elif info.ANGLE_INTERP:
                 # Loop through angles and assign data to the specific angle it corresponds to in the LSP scan
@@ -303,11 +311,11 @@ def process_data(lidar_data, temps_dist, scan_speeds, info=ProcessInfo(), q_dat=
                     else:
                         temps_dist[corr_scan, (idx-pad):(idx+pad+1), info.DIST_IDX] = distance  # Assign distance value
                         temps_dist[corr_scan, (idx-pad):(idx+pad+1), info.ANGLE_IDX] = angle    # Assign angle value
-
+            # ----------------------------------------------------------------------------------------------------------
             else:
                 print('Error! Processing method [in <class>ProcessInfo] incorrectly defined.')
                 sys.exit()
-
+            # ----------------------------------------------------------------------------------------------------------
 
     # Perform interpolation of data
     raw_lid = np.copy(temps_dist[:, :, info.DIST_IDX])   # Extract raw distance data so it can be returned separately to interpolated array
@@ -323,34 +331,27 @@ def process_data(lidar_data, temps_dist, scan_speeds, info=ProcessInfo(), q_dat=
 
 def find_lsp_angle(angle, distance, info=ProcessInfo()):
     """Finds associated LSP angle which will coincide with a lidar data point for angle and distance"""
-    # Correct lidar angle (may need to multiplay by -1
-    angle_corr = angle + info.LIDAR_ANGLE_OFFSET
 
     # Calculate angle used for trig calculations
-    angle_corr = 90 - angle_corr
+    angle_corr = angle + 90
 
     # Find distance between LSP and object (cosine rule)
     therm_dist = np.sqrt(distance**2 + info.LIDAR_LSP_DIST_VERT**2 -
                          (2 * distance * info.LIDAR_LSP_DIST_VERT * np.cos(np.deg2rad(angle_corr))))
 
-    # Find thermal angle (sine rule)
-    therm_angle = np.rad2deg(np.arcsin(distance * np.sin(np.deg2rad(angle_corr)) / therm_dist))
-    # Check with cosine rule
-    therm_angle_cos = np.rad2deg(np.arccos(distance**2 + info.LIDAR_LSP_DIST_VERT**2 - therm_angle**2
-                                 / (2*distance*info.LIDAR_LSP_DIST_VERT)))
-    if np.round(therm_angle, 1) != np.round(therm_angle_cos, 1):
-        print('Error!!! Cosine and Sine rules returning difference values for LSP angle')
-        return None
-    else:
-        print('Success!!! Cosine and Sine rules agree on angle')
+    # Find thermal angle with cosine rule
+    therm_angle = np.rad2deg(np.arccos((therm_dist**2 + info.LIDAR_LSP_DIST_VERT**2 - distance**2)
+                                 / (2*therm_dist*info.LIDAR_LSP_DIST_VERT)))
 
     # If we have an obtuse angle it needs to be converted from the -ve (np.arcsin/cos returns between -pi/2 and pi/2)
     if therm_angle < 0:
         therm_angle += 180
 
     # Convert therm_angle to LSP angle (LSP angles defined as between -x and x so that 0 is the horizontal scan)
-    lsp_angle = (therm_angle - 90) * -1
+    # lsp_angle = (therm_angle - 90) * -1
+    lsp_angle = 90 - therm_angle
 
+    print('Therm angle: {}\tLSP angle: {}\tLidar angle: {}'.format(therm_angle, lsp_angle, angle))
     return [lsp_angle, therm_dist]
 
 
