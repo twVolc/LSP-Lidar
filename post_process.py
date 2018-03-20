@@ -12,13 +12,16 @@ import sys
 import h5py
 from laspy import file as lasfile
 from laspy import header as lashead
-
+import cv2
 
 class ProcessInfo(ArrayInfo):
     """Contains properties used in post-processing data
     -> User may need to change these properties"""
-    LIDAR_LSP_DIST_HOR = 0.0    # Horizontal Distance between Lidar and LSP acquisition positions (mm)
-    LIDAR_LSP_DIST_VERT = 11    # Vertical Distance between Lidar and LSP acquisition positions (mm)
+    LIDAR_LSP_DIST_HOR = 30     # Horizontal Distance between Lidar and LSP acquisition positions (mm)
+    LIDAR_LSP_DIST_VERT = 160   # Vertical Distance between Lidar and LSP acquisition positions (mm)
+    LIDAR_LSP_DIST_HYP = np.sqrt(LIDAR_LSP_DIST_HOR**2 + LIDAR_LSP_DIST_VERT**2)
+    LIDAR_ANGLE_SHIFT = np.rad2deg(np.arctan(LIDAR_LSP_DIST_HOR/LIDAR_LSP_DIST_VERT))  # Angle shift due to Lidar and LSP not being vertically alligned
+    LIDAR_LSP_DIST_X = 0        # Distance between Lidar and LSP acquisition positions (Metres) in scan direction (should be 0 with new set up)
     INSTRUMENT_SPEED = 0.05     # Speed of movement (m/s)
     INSTRUMENT_DIRECTION = 1    # Scan direction (LSP first=1, Lidar first=-1)
     SHIFT_SCANS = False         # Boolean for whether or not we apply the movement shift (True is generally required) In new system the  shift isn't necessary as the scans are alligned
@@ -33,11 +36,8 @@ class ProcessInfo(ArrayInfo):
     LIDAR_PADDING = 0       # Padding of lidar distance data (sets values around a measurement to the same value). Used because LSP angular resolution is much higher than lidar
 
     # Generate 1D array holding angles of LSP data points
-    _range_lsp_angle = 80                   # Range of angles measured by LSP
-    LSP_ANGLES = np.linspace(0, _range_lsp_angle, ArrayInfo.len_lsp) - (_range_lsp_angle / 2)
-    LSP_MIN_ANGLE = np.min(LSP_ANGLES) - 0.5    # Angles outside of this range are discarded
-    LSP_MAX_ANGLE = np.max(LSP_ANGLES) + 0.5    # Angles outside of this range are discarded
-    LIDAR_ANGLE_OFFSET = 0                # Shift applied to lidar angles to match with LSP
+    _range_lsp_angle = 36                  # Range of angles measured by LSP
+    LIDAR_ANGLE_OFFSET = -7                # Shift applied to lidar angles to match with LSP
 
     # Define method of interpolation for lidar measurements
     # Time interpolation takes data from lidar and spreads it evenly across contemporaneous LSP scan, regardless of scan angle
@@ -48,6 +48,12 @@ class ProcessInfo(ArrayInfo):
     else:
         ANGLE_INTERP = False
     INTERP_METHOD = 'cubic'     # Method of interpolation for 2d_interp()
+
+    def __generate_LSP_angles__(self):
+        """Generate the LSP angles from LSP FOV"""
+        self.LSP_ANGLES = np.linspace(0, self._range_lsp_angle, ArrayInfo.len_lsp) - (self._range_lsp_angle / 2)
+        self.LSP_MIN_ANGLE = np.min(self.LSP_ANGLES) - 0.5  # Angles outside of this range are discarded
+        self.LSP_MAX_ANGLE = np.max(self.LSP_ANGLES) + 0.5  # Angles outside of this range are discarded
 
 
 class ErrorDist:
@@ -84,9 +90,14 @@ class DataProcessor:
         self.mess_inst = mess_inst  # Instance of MessagesGUI() for sending messages if necessary
 
         self.data_array = None
+        self.data_array_resize = None
         self.raw_lidar = None
-        self.xyz_array = np.zeros([self._num_pts, self.num_scans, self._len_z])
+        self.xyz_array = None
         self.flat_array = None
+
+        # Resize array
+        self.resize = True
+        self.resize_dims = [1000, 1000]
 
     def __check_array__(self):
         """Housekeeping method, to check that we have data before we attempt to process it"""
@@ -149,28 +160,67 @@ class DataProcessor:
             hf.create_dataset('Array', data=self.flat_array)
             hf.close()
         except TypeError as err:
-           self.mess_inst.message('TypeError [{}] when attempting to save HDF5'.format(err))
+            if isinstance(self.mess_inst, MessagesGUI):
+                self.mess_inst.message('TypeError [{}] when attempting to save HDF5'.format(err))
+            else:
+                print('TypeError [{}] when attempting to save HDF5'.format(err))
 
     def save_ASCII(self, filename):
         """Save xyz coordinates and temperature as ASCII file in columns"""
-        pass
+        if not self.__check_flat_array__():
+            if isinstance(self.mess_inst, MessagesGUI):
+                self.mess_inst.message('No flattened array is present to save')
+            else:
+                print('No flattened array is present to save')
+            return
+
+        if isinstance(self.mess_inst, MessagesGUI):
+            self.mess_inst.message('Saving ASCII file: {}'.format(filename))
+        else:
+            print('Saving ASCII file...')
+
+        filename = filename.split('.')[0] + '.xyz'
+        length = len(self.get_temp())
+        self.flat_array[np.isnan(self.flat_array)] = 0  # Just make nan zero for ease
+
+        min_vals = self.flat_array[self.temp_idx, :] - np.amin(self.flat_array[self.temp_idx, :])
+        norm_temp = min_vals / np.amax(min_vals)
+
+        with open(filename, 'w') as f:
+            for i in range(length):
+                f.write('{}\t{}\t{}\t{}\t{}\r\n'.format(self.flat_array[self.x_idx, i], self.flat_array[self.y_idx, i],
+                                                        self.flat_array[self.z_idx, i],
+                                                        self.flat_array[self.temp_idx, i], norm_temp[i]))
 
     def create_xyz_basic(self):
         """Generate a basic xyz array with no hold on speed, purely arbitrary distances"""
         if not self.__check_array__():
             return
 
-        self.xyz_array[:, :, :3] = self.data_array
+        if self.resize:
+            # Assign to new variable as we may want to revert back to using self.data_array with different resizing
+            self.data_array_resize = cv2.resize(self.data_array, tuple(self.resize_dims), interpolation=cv2.INTER_CUBIC)
 
-        # Iterate through each scan and assign it and arbitrary x coordinate (1st scan is 0, 2nd is 1 etc)
-        for x in range(self.num_scans):
+        # If we resize te image we need to update the dimensions
+        self.num_scans = self.data_array_resize.shape[0]
+        self._num_pts = self.data_array_resize.shape[1]
+        print(self.num_scans, self._num_pts)
+
+        # Create empty matrix to hold all fo data
+        self.xyz_array = np.zeros([self.num_scans, self._num_pts, self._len_z])
+
+        # assign temperature, distance and angle data to arrays
+        self.xyz_array[:, :, :3] = self.data_array_resize
+
+        # Iterate through each scan and assign it an arbitrary x coordinate (1st scan is 0, 2nd is 1 etc)
+        for x in range(self._num_pts):
             self.xyz_array[:, x, self.x_idx] = x
 
         # Iterate through each scan angle and give an arbitrary y coordinate
-        for y in range(self._num_pts):
+        for y in range(self.num_scans):
             # Reverse indices so that we start with bottom of array
             # > np index starts top left as 0,0 but we want to set 0,0 as bottom left so that y increase up the rows
-            idx = self._num_pts - (y + 1)
+            idx = self.num_scans - (y + 1)
             self.xyz_array[idx, :, self.y_idx] = y
 
         if isinstance(self.mess_inst, MessagesGUI):
@@ -191,15 +241,25 @@ class DataProcessor:
             fileobj.Z = self.flat_array[self.z_idx, :]
             fileobj.Intensity = self.flat_array[self.temp_idx, :]
             fileobj.close()
+            if isinstance(self.mess_inst, MessagesGUI):
+                self.mess_inst.message('.LAS file saved: {}'.format(filename))
+            else:
+                print('.LAS file saved: {}'.format(filename))
+
         except AttributeError as err:
-            self.mess_inst.message('AttributeError [{}] when attempting to generate .LAS file'.format(err))
+            if isinstance(self.mess_inst, MessagesGUI):
+                self.mess_inst.message('AttributeError [{}] when attempting to generate .LAS file'.format(err))
+            else:
+                print('AttributeError [{}] when attempting to generate .LAS file'.format(err))
         except TypeError as err:
-            self.mess_inst.message('TypeError [{}] when attempting to generate .LAS file'.format(err))
+            if isinstance(self.mess_inst, MessagesGUI):
+                self.mess_inst.message('TypeError [{}] when attempting to generate .LAS file'.format(err))
+            else:
+                print('TypeError [{}] when attempting to generate .LAS file'.format(err))
 
     def __make_header__(self):
         """Create header object for .LAS format and return it"""
         header = lashead.Header(point_format=0)
-
         return header
 
 def process_data_alligned(lidar_data, temps_dist, scan_speeds, info=ProcessInfo(), q_dat=None):
@@ -214,6 +274,8 @@ def process_data(lidar_data, temps_dist, scan_speeds, info=ProcessInfo(), q_dat=
     -> Positions lidar data in main array
     -> Interpolates lidar data such that every temperature point has an associated distance
     -> Returns processed array"""
+    info.__generate_LSP_angles__()  # Generate LSP angles - done because FOV may have changed in instance of ProcessInfo
+
     movement_speed = info.INSTRUMENT_SPEED       # Will want to change this assignement when we stream speed
     corr_scan = None    # Just intialising variable which needs to exists in first main loop - correct scan index
 
@@ -233,7 +295,8 @@ def process_data(lidar_data, temps_dist, scan_speeds, info=ProcessInfo(), q_dat=
         # Also need to interpolate between scans where no lidar data is found
         distances = lidar_data[scan, distance_idxs]
         angles = lidar_data[scan, angle_idxs] + info.LIDAR_ANGLE_OFFSET  # Apply offset to angles to match LSP
-        angles[angles >= 320] = (angles[angles >= 320] - 360)     # Possibly the adjustment needed here
+        angles[angles >= 300 + info.LIDAR_ANGLE_OFFSET] = \
+            (angles[angles >= 300 + info.LIDAR_ANGLE_OFFSET] - 360)     # Possibly the adjustment needed here
         quality = lidar_data[scan, quality_idxs]
 
         # Find where data stops
@@ -286,17 +349,23 @@ def process_data(lidar_data, temps_dist, scan_speeds, info=ProcessInfo(), q_dat=
             elif info.ANGLE_INTERP:
                 # Loop through angles and assign data to the specific angle it corresponds to in the LSP scan
                 for i in range(num_dat):
-                    if (angles[i] + 1) > info.LSP_MAX_ANGLE or (angles[i] + 1) < info.LSP_MIN_ANGLE:
-                        EMPTY_LID_FLAG[scan] = 1  # Flag that we have no data for this scan
-                        continue    # Ignore measurements outside of the FOV of the LSP
-
                     if info.ADJ_ANGLE:
+                        # Find associated LSP angle using cosine rule to map lidar measurement to LSP
                         return_val = find_lsp_angle(angles[i], distances[i], info)
+                        if return_val is None:
+                            print('Discarding Lidar data point...')
+                            EMPTY_LID_FLAG[scan] = 1  # Flag that we have no data for this scan
+                            continue  # Ignore measurements outside of the FOV of the LSP
                         angle = return_val[0]
                         distance = return_val[1]
                     else:
                         angle = angles[i]
                         distance = distances[i]
+
+                    # If calculated LSP angle is outside of the range of LSP angles we discard it
+                    if angle > info.LSP_MAX_ANGLE or angle < info.LSP_MIN_ANGLE:
+                        EMPTY_LID_FLAG[scan] = 1  # Flag that we have no data for this scan
+                        continue  # Ignore measurements outside of the FOV of the LSP
 
                     idx = np.argmin(abs(info.LSP_ANGLES - angle))
                     # print(idx)
@@ -319,7 +388,7 @@ def process_data(lidar_data, temps_dist, scan_speeds, info=ProcessInfo(), q_dat=
 
     # Perform interpolation of data
     raw_lid = np.copy(temps_dist[:, :, info.DIST_IDX])   # Extract raw distance data so it can be returned separately to interpolated array
-    temps_dist[:, :, info.DIST_IDX] = interp_2D(temps_dist[:, :, info.DIST_IDX])
+    temps_dist[:, :, info.DIST_IDX] = interp_2D(temps_dist[:, :, info.DIST_IDX], info=info)
 
     # USe queue to return data if this function is a thread - don't think this is necessary in the end
     if q_dat is not None:
@@ -333,15 +402,17 @@ def find_lsp_angle(angle, distance, info=ProcessInfo()):
     """Finds associated LSP angle which will coincide with a lidar data point for angle and distance"""
 
     # Calculate angle used for trig calculations
-    angle_corr = angle + 90
+    angle_corr = angle + 90 + info.LIDAR_ANGLE_SHIFT
+    if angle_corr >= 180:
+        return None         # Physically not possible triangle so return
 
     # Find distance between LSP and object (cosine rule)
-    therm_dist = np.sqrt(distance**2 + info.LIDAR_LSP_DIST_VERT**2 -
-                         (2 * distance * info.LIDAR_LSP_DIST_VERT * np.cos(np.deg2rad(angle_corr))))
+    therm_dist = np.sqrt(distance**2 + info.LIDAR_LSP_DIST_HYP**2 -
+                         (2 * distance * info.LIDAR_LSP_DIST_HYP * np.cos(np.deg2rad(angle_corr))))
 
     # Find thermal angle with cosine rule
-    therm_angle = np.rad2deg(np.arccos((therm_dist**2 + info.LIDAR_LSP_DIST_VERT**2 - distance**2)
-                                 / (2*therm_dist*info.LIDAR_LSP_DIST_VERT)))
+    therm_angle = np.rad2deg(np.arccos((therm_dist**2 + info.LIDAR_LSP_DIST_HYP**2 - distance**2)
+                                 / (2*therm_dist*info.LIDAR_LSP_DIST_HYP)))
 
     # If we have an obtuse angle it needs to be converted from the -ve (np.arcsin/cos returns between -pi/2 and pi/2)
     if therm_angle < 0:
@@ -351,7 +422,8 @@ def find_lsp_angle(angle, distance, info=ProcessInfo()):
     # lsp_angle = (therm_angle - 90) * -1
     lsp_angle = 90 - therm_angle
 
-    print('Therm angle: {}\tLSP angle: {}\tLidar angle: {}'.format(therm_angle, lsp_angle, angle))
+    # print('Therm angle: {}\tAngle corr: {}\tLSP angle: {}\tLidar angle: {}'.format(therm_angle, angle_corr,
+    #                                                                                lsp_angle, angle))
     return [lsp_angle, therm_dist]
 
 
@@ -364,7 +436,7 @@ def scan_shift(scan_speeds, idx, movement_speed, info=ProcessInfo()):
     # This divide by zero is what is ruining the data
     incr = info.INSTRUMENT_DIRECTION # Get increment from class (either +1 or -1 depending on instrument orientation)
 
-    time_taken = info.LIDAR_LSP_DIST_HOR / movement_speed
+    time_taken = info.LIDAR_LSP_DIST_X / movement_speed
 
     num_scans = len(scan_speeds)
     scan_time = 0
@@ -400,6 +472,7 @@ def interp_2D(data_grid, info=ProcessInfo()):
     """Perform 2D interpolation on data"""
     print('Interpolating data...')
     meth = info.INTERP_METHOD    # Get method for interpolating
+    print(meth)
 
     xy_grid = np.nonzero(data_grid)
     z_grid = data_grid[xy_grid]

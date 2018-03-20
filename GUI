@@ -43,13 +43,16 @@ class MainGUI(ttk.Frame):
         self.tabs = ttk.Notebook(self.parent)
         self.acqFrame = ttk.Frame(self.tabs)
         self.analysisFrame = ttk.Frame(self.tabs)
+        self.frame3D = ttk.Frame(self.tabs)
         self.tabs.add(self.acqFrame, text='Acquisition')
         self.tabs.add(self.analysisFrame, text='Analysis')
+        self.tabs.add(self.frame3D, text='3D Analysis')
         self.tabs.pack(fill="both", expand=1)
 
         # Setup frames
         self.__acq_setup__(self.acqFrame)
         self.__analysis_setup__(self.analysisFrame)
+        self.__3D_setup__(self.frame3D)
         # -----------------------------------------------------------------
 
         self.processor.mess_inst = self.messages
@@ -74,9 +77,7 @@ class MainGUI(ttk.Frame):
         self.lsp_config = LSPConfigGUI(frame, self.messages)
         self.lsp_config.frame.pack(side=tk.TOP)
 
-        # 3D plot
-        self.plt_3d = Plot3DGUI(frame)
-        self.plt_3d.frame.pack(side=tk.BOTTOM)
+
 
     def __analysis_setup__(self, frame):
         """Setup analysis frame"""
@@ -104,25 +105,41 @@ class MainGUI(ttk.Frame):
         save_butt = tk.Button(file_frame, text='SAVE', command=self.save_data,
                               bg='orange', font=self.setts.mainFontBold)
         save_butt.pack()
-
-        gen_xyz_butt = tk.Button(file_frame, text='Generate XYZ', command=self.gen_xyz,
-                                 bg='deep sky blue', font=self.setts.mainFontBold)
-        gen_xyz_butt.pack()
-
         # --------------------------------------------------------------------
         # Settings setup
         # --------------------------------------------------------------------
         set_frame = tk.LabelFrame(frame, text='Settings', relief=tk.GROOVE, borderwidth=2)
         set_frame.grid(row=0, column=1, sticky='w', padx=2, pady=2)
 
+        self.lid_offset_var = tk.StringVar()
+        self.lid_offset_var.set(str(self.info.LIDAR_ANGLE_OFFSET))
+        offset_lab = ttk.Label(set_frame, text='Lidar Angle Offset:')
+        offset_lab.grid(row=0, column=0, pady=2, sticky='e')
+        offset_box = tk.Spinbox(set_frame, textvariable=self.lid_offset_var, from_=-40, to=40, increment=1, width=3)
+        offset_box.grid(row=0, column=1, sticky='e', pady=2, padx=2)
+
+        self.LSP_FOV = tk.StringVar()
+        self.LSP_FOV.set(self.info._range_lsp_angle)
+        FOV_lab = ttk.Label(set_frame, text='LSP FOV:')
+        FOV_lab.grid(row=1, column=0, pady=2, sticky='e')
+        FOV_box = tk.Spinbox(set_frame, textvariable=self.LSP_FOV, from_=10, to=100, increment=1, width=3)
+        FOV_box.grid(row=1, column=1, sticky='e', pady=2, padx=2)
+
+        self.lidar_interp_options = ['cubic', 'linear', 'nearest']
+        self.lidar_interp_var = tk.StringVar()
+        interp_lab = ttk.Label(set_frame, text='Lidar Interpolation:')
+        interp_lab.grid(row=2, column=0, pady=2, sticky='e')
+        interp_box = ttk.OptionMenu(set_frame, self.lidar_interp_var,
+                                    self.lidar_interp_options[0], *self.lidar_interp_options)
+        interp_box.grid(row=2, column=1, pady=2, sticky='e')
+
         self.dir_var = tk.StringVar()
         self.dir_var.set(self.setts.lsp_first[0])
         dir_lab = ttk.Label(set_frame, text='Instrument Orientation:')
-        dir_lab.grid(row=0, column=0)
+        dir_lab.grid(row=3, column=0, pady=2, sticky='e')
         dir_ent = ttk.OptionMenu(set_frame, self.dir_var, self.setts.lsp_first[0],
                                  self.setts.lsp_first[0], self.setts.lid_first[0])
-        dir_ent.grid(row=0, column=1)
-
+        dir_ent.grid(row=3, column=1, pady=2, sticky='e')
         # --------------------------------------------------------------------
         # Plot setup
         # --------------------------------------------------------------------
@@ -145,6 +162,38 @@ class MainGUI(ttk.Frame):
         # self.plt_3d.frame.pack(side=tk.BOTTOM)
         # --------------------------------------------------------------------
 
+    def __3D_setup__(self, frame):
+        """Setup 3D analysis frame"""
+        self.save_3d = FileSelector(frame, type=FileSelector.SAVE, initdir=self.initdir, title='Save .xyz file:')
+        self.save_3d.frame.pack(side=tk.TOP)
+
+        analysis_frame = tk.Frame(frame, relief=tk.GROOVE, borderwidth=2)
+        analysis_frame.pack(side=tk.TOP)
+
+        gen_xyz_butt = tk.Button(analysis_frame, text='Generate XYZ', command=self.gen_xyz,
+                                 bg='deep sky blue', font=self.setts.mainFontBold)
+        gen_xyz_butt.grid(row=2, column=0, columnspan=2, sticky='ew')
+
+        lab = tk.Label(analysis_frame, text='Resize X: ', font=self.setts.mainFont)
+        lab.grid(row=0, column=0, sticky='e')
+        lab = tk.Label(analysis_frame, text='Resize Y: ', font=self.setts.mainFont)
+        lab.grid(row=1, column=0, sticky='e')
+
+        self.resize_x = tk.StringVar()
+        self.resize_x.set('1000')
+        self.resize_y = tk.StringVar()
+        self.resize_y.set('1000')
+
+        self.resize_x_box = tk.Spinbox(analysis_frame, textvariable=self.resize_x, font=self.setts.mainFont)
+        self.resize_x_box.configure(from_=1, to=1000, increment=1, width=4)
+        self.resize_y_box = tk.Spinbox(analysis_frame, textvariable=self.resize_y, font=self.setts.mainFont)
+        self.resize_y_box.configure(from_=1, to=1000, increment=1, width=4)
+        self.resize_x_box.grid(row=0, column=1)
+        self.resize_y_box.grid(row=1, column=1)
+
+        # 3D plot
+        self.plt_3d = Plot3DGUI(frame)
+        self.plt_3d.frame.pack(side=tk.TOP)
 
     def handle_acquisition(self):
         """Starts LSP/lidar acquisition sequence"""
@@ -176,8 +225,12 @@ class MainGUI(ttk.Frame):
         elif instr_dir == self.setts.lsp_first[0]:
             self.info.INSTRUMENT_DIRECTION = self.setts.lsp_first[1]
         else:
-            print('Error!!! Unknown instrument direction definition: %s' % instr_dir)
+            self.messages.message('Error!!! Unknown instrument direction definition: %s' % instr_dir)
             return
+
+        self.info.LIDAR_ANGLE_OFFSET = int(self.lid_offset_var.get())   # Update lidar offset angle
+        self.info._range_lsp_angle = int(self.LSP_FOV.get())            # Update lidar FOV
+        self.info.INTERP_METHOD = self.lidar_interp_var.get()           # Update lidar interpolation method
 
         # Perform main processing
         # t = Thread(target=process_data, args=(self.data_dict['lidar'], self.data_dict['array'],
@@ -193,7 +246,7 @@ class MainGUI(ttk.Frame):
         """Initialising things for processing of data"""
         array_main = np.zeros([self.info.NUM_SCANS, self.info.len_lsp, self.info.NUM_Z_DIM])
         if self.file_loader.filename is None:
-            print('Error!!! No file selected, cannot process data.')
+            self.messages.message('Error!!! No file selected, cannot process data.')
             return None
         dat = self.lsp_proc.read_array(self.file_loader.filename)['arr']
         full_dat = remove_empty_scans(dat)
@@ -216,7 +269,17 @@ class MainGUI(ttk.Frame):
 
     def gen_xyz(self):
         """Instigate generation of xyz data"""
+        # Update resizing dimensions
+        self.processor.resize_dims[0] = int(self.resize_x.get())
+        self.processor.resize_dims[1] = int(self.resize_y.get())
+
         self.processor.create_xyz_basic()
+        if self.save_3d.filename is None:
+            self.messages.message('No file selected for save - data not saved!')
+        else:
+            self.processor.save_ASCII(self.save_3d.filename)
+            self.processor.generate_LAS(self.save_3d.filename)
+
         self.plot_3D()
 
     def plot_3D(self):
@@ -224,7 +287,7 @@ class MainGUI(ttk.Frame):
         if self.processor.flat_array is not None:
             cut_s = 0
             cut_e = 1000000
-            step = 4
+            step = 1
             x = self.processor.get_x()
             y = self.processor.get_y()
             z = self.processor.get_z()

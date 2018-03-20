@@ -8,6 +8,7 @@ import matplotlib
 import matplotlib.pyplot as plt
 from matplotlib.backends.backend_tkagg import FigureCanvasTkAgg, NavigationToolbar2TkAgg
 from mpl_toolkits import mplot3d
+import matplotlib.cm as cm
 
 from LSP_control import SocketLSP
 
@@ -212,8 +213,11 @@ class PlottingGUI:
     def __init__(self, frame, axis_label):
         self.frame = tk.Frame(frame, relief=tk.RAISED, borderwidth=5)   # tk frame
         self.axis_label = axis_label    # Axis label (e.g. 'Distance [mm]')
-        self.cmap = 'nipy_spectral'     # Colourmap
+        # self.cmap = 'nipy_spectral'     # Colourmap
+        self.cmap = 'magma'     # Colourmap
         self.img_size = [1000, 1000]    # Dimensions of image
+
+        self.cmap_list = ['magma', 'nipy_spectral']
 
         self.__setup_plots__()  # Setup plot areas
 
@@ -228,6 +232,15 @@ class PlottingGUI:
         self.cbar = self.fig.colorbar(self.img)
         self.cbar.set_label(self.axis_label)
 
+        col_frame = tk.Frame(self.frame)
+        col_frame.pack(side=tk.TOP)
+        color_lab = ttk.Label(col_frame, text='Colourmap:')
+        color_lab.grid(row=0, column=0)
+        self.cmap_var = tk.StringVar()
+        self.cmap_var.set(self.cmap_list[0])
+        options = ttk.OptionMenu(col_frame, self.cmap_var, self.cmap_var.get(), *self.cmap_list)
+        options.grid(row=0, column=1)
+
         self.canv = FigureCanvasTkAgg(self.fig, master=self.frame)
         self.__draw_canv__()
         self.canv.get_tk_widget().pack(side=tk.TOP, fill=tk.BOTH, expand=True)
@@ -239,7 +252,13 @@ class PlottingGUI:
     def update_cmap(self, data):
         """Updates axis with with new data"""
         self.img.set_data(data)                                             # Update data
-        self.img.set_clim(vmin=np.nanmin(data), vmax=np.nanmax(data))       # Set colour scale limits
+        if self.axis_label == 'Distance [mm]':
+            print('Updating lidar colormap')
+            self.img.set_clim(vmin=0, vmax=np.nanmax(data))     # If lidar data we want to set the distance to 0 minimum
+        else:
+            self.img.set_clim(vmin=np.nanmin(data), vmax=np.nanmax(data))       # Set colour scale limits
+        self.cmap = self.cmap_var.get()
+        self.img.set_cmap(cm.get_cmap(self.cmap))                               # Update colourmap
         self.__draw_canv__()                                                    # Draw new plot
 
     def __draw_canv__(self):
@@ -275,7 +294,7 @@ class Plot3DGUI:
         self.ax.set_xlabel('X')
         self.ax.set_ylabel('Y')
         self.ax.set_zlabel('Z')
-        self.ax.set_zlim([np.nanmax(z_dat),0])
+        self.ax.set_zlim([np.nanmax(z_dat), 0])
         self.__draw_canv__()
 
     def __draw_canv__(self):

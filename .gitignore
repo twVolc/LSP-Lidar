@@ -28,3 +28,11 @@ Analysis/
 2018-03-07/
 
 Data/
+
+FOV tests\.txt
+
+*.LAS
+
+*.xyz
+
+*.pod
