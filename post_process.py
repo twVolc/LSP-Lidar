@@ -36,7 +36,7 @@ class ProcessInfo(ArrayInfo):
     LIDAR_PADDING = 0       # Padding of lidar distance data (sets values around a measurement to the same value). Used because LSP angular resolution is much higher than lidar
 
     # Generate 1D array holding angles of LSP data points
-    _range_lsp_angle = 36                  # Range of angles measured by LSP
+    _range_lsp_angle = 36                  # Range of angles measured by LSP (40 and -8 shift possibly good)
     LIDAR_ANGLE_OFFSET = -7                # Shift applied to lidar angles to match with LSP
 
     # Define method of interpolation for lidar measurements
@@ -112,7 +112,7 @@ class DataProcessor:
             return True
 
     def __check_flat_array__(self):
-        """Check if we have a flattened array"""
+        """Check if we have a flattened array in object"""
         if self.flat_array is not None:
             return True
         else:
@@ -151,46 +151,6 @@ class DataProcessor:
     def calc_error_dist(self):
         """Calculates the error of the dstance measurements based on RPlidar's error specifications"""
         pass
-
-    def save_hdf5(self, filename):
-        """Saves array in HDF5 format - universal format which can be read in C++ too"""
-        filename += '.h5'
-        try:
-            hf = h5py.File(filename, 'w')
-            hf.create_dataset('Array', data=self.flat_array)
-            hf.close()
-        except TypeError as err:
-            if isinstance(self.mess_inst, MessagesGUI):
-                self.mess_inst.message('TypeError [{}] when attempting to save HDF5'.format(err))
-            else:
-                print('TypeError [{}] when attempting to save HDF5'.format(err))
-
-    def save_ASCII(self, filename):
-        """Save xyz coordinates and temperature as ASCII file in columns"""
-        if not self.__check_flat_array__():
-            if isinstance(self.mess_inst, MessagesGUI):
-                self.mess_inst.message('No flattened array is present to save')
-            else:
-                print('No flattened array is present to save')
-            return
-
-        if isinstance(self.mess_inst, MessagesGUI):
-            self.mess_inst.message('Saving ASCII file: {}'.format(filename))
-        else:
-            print('Saving ASCII file...')
-
-        filename = filename.split('.')[0] + '.xyz'
-        length = len(self.get_temp())
-        self.flat_array[np.isnan(self.flat_array)] = 0  # Just make nan zero for ease
-
-        min_vals = self.flat_array[self.temp_idx, :] - np.amin(self.flat_array[self.temp_idx, :])
-        norm_temp = min_vals / np.amax(min_vals)
-
-        with open(filename, 'w') as f:
-            for i in range(length):
-                f.write('{}\t{}\t{}\t{}\t{}\r\n'.format(self.flat_array[self.x_idx, i], self.flat_array[self.y_idx, i],
-                                                        self.flat_array[self.z_idx, i],
-                                                        self.flat_array[self.temp_idx, i], norm_temp[i]))
 
     def create_xyz_basic(self):
         """Generate a basic xyz array with no hold on speed, purely arbitrary distances"""
@@ -231,7 +191,7 @@ class DataProcessor:
         self.flatten_array()
 
     def generate_LAS(self, filename):
-        """Create a .las file, or object to be saved"""
+        """Create a .las file, or object to be saved (NOT CERTAIN THIS WORKS!)"""
         try:
             filename = filename.split('.')[0] + '.LAS'
             headerobj = self.__make_header__()
@@ -262,12 +222,46 @@ class DataProcessor:
         header = lashead.Header(point_format=0)
         return header
 
-def process_data_alligned(lidar_data, temps_dist, scan_speeds, info=ProcessInfo(), q_dat=None):
-    """Similar to process_data() but for new setup where lidar and LSP scan planes are alligned
-    -> Removes any blank lines of LSP data
-    -> Positions lidar data in main array, scaling distance to temperature distance if necessary (small offset between LSP and Lidar)
-    -> Interpolates lidar data
-    -> returns main array"""
+    def save_hdf5(self, filename):
+        """Saves array in HDF5 format - universal format which can be read in C++ too (FUNCTIONALITY NOT CHECKED)"""
+        filename += '.h5'
+        try:
+            hf = h5py.File(filename, 'w')
+            hf.create_dataset('Array', data=self.flat_array)
+            hf.close()
+        except TypeError as err:
+            if isinstance(self.mess_inst, MessagesGUI):
+                self.mess_inst.message('TypeError [{}] when attempting to save HDF5'.format(err))
+            else:
+                print('TypeError [{}] when attempting to save HDF5'.format(err))
+
+    def save_ASCII(self, filename):
+        """Save xyz coordinates and temperature as ASCII file in columns"""
+        if not self.__check_flat_array__():
+            if isinstance(self.mess_inst, MessagesGUI):
+                self.mess_inst.message('No flattened array is present to save')
+            else:
+                print('No flattened array is present to save')
+            return
+
+        if isinstance(self.mess_inst, MessagesGUI):
+            self.mess_inst.message('Saving ASCII file: {}'.format(filename))
+        else:
+            print('Saving ASCII file...')
+
+        filename = filename.split('.')[0] + '.xyz'
+        length = len(self.get_temp())
+        self.flat_array[np.isnan(self.flat_array)] = 0  # Just make nan zero for ease
+
+        min_vals = self.flat_array[self.temp_idx, :] - np.amin(self.flat_array[self.temp_idx, :])
+        norm_temp = min_vals / np.amax(min_vals)
+
+        with open(filename, 'w') as f:
+            for i in range(length):
+                f.write('{}\t{}\t{}\t{}\t{}\r\n'.format(self.flat_array[self.x_idx, i], self.flat_array[self.y_idx, i],
+                                                        self.flat_array[self.z_idx, i],
+                                                        self.flat_array[self.temp_idx, i], norm_temp[i]))
+
 
 def process_data(lidar_data, temps_dist, scan_speeds, info=ProcessInfo(), q_dat=None):
     """Main processing function

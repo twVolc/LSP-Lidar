@@ -125,7 +125,7 @@ class MainGUI(ttk.Frame):
         FOV_box = tk.Spinbox(set_frame, textvariable=self.LSP_FOV, from_=10, to=100, increment=1, width=3)
         FOV_box.grid(row=1, column=1, sticky='e', pady=2, padx=2)
 
-        self.lidar_interp_options = ['cubic', 'linear', 'nearest']
+        self.lidar_interp_options = ['linear', 'cubic', 'nearest']
         self.lidar_interp_var = tk.StringVar()
         interp_lab = ttk.Label(set_frame, text='Lidar Interpolation:')
         interp_lab.grid(row=2, column=0, pady=2, sticky='e')
