@@ -9,10 +9,13 @@ import matplotlib.pyplot as plt
 from matplotlib.backends.backend_tkagg import FigureCanvasTkAgg, NavigationToolbar2TkAgg
 from mpl_toolkits import mplot3d
 import matplotlib.cm as cm
+from matplotlib.figure import Figure
 
 from LSP_control import SocketLSP
+from OpticalFlow import OptiFlow
 
 import numpy as np
+import time
 
 
 class SettingsGUI:
@@ -300,3 +303,130 @@ class Plot3DGUI:
     def __draw_canv__(self):
         """Draw canvas"""
         self.canv.show()
+
+
+class OptiSetts:
+    """Class to hold optical flow paramter settings in Tkinter frame"""
+    def __init__(self, frame, settings=None, opti_inst=OptiFlow()):
+        if not isinstance(settings, SettingsGUI):
+            raise TypeError('Expected settings provided as instance of SettingsGUI')
+
+        self.frame = tk.Frame(frame)
+        self.frame_img = tk.Frame(self.frame, relief=tk.RAISED, borderwidth=2)
+        self.frame_img.pack(side=tk.BOTTOM)
+
+        self.frame_setts = tk.LabelFrame(self.frame, text='Optical Flow Settings', relief=tk.GROOVE, borderwidth=2)
+        self._pdx = 5
+        self._pdy = 5
+        self.setts = settings
+        self.opti_inst = opti_inst
+
+        self.flow_drawn = False     # Bool for determining whether we have already plotted flow lines before
+
+        # Create labels for entry parameters
+        lab = tk.Label(self.frame_setts, text='Pyramid Scale:', bg=self.setts.bgColour, font=self.setts.mainFont)
+        lab.grid(row=0, column=0, sticky='e', pady=self._pdy)
+        lab = tk.Label(self.frame_setts, text='Pyramid Levels:', bg=self.setts.bgColour, font=self.setts.mainFont)
+        lab.grid(row=1, column=0, sticky='e', pady=self._pdy)
+        lab = tk.Label(self.frame_setts, text='Window Size:', bg=self.setts.bgColour, font=self.setts.mainFont)
+        lab.grid(row=2, column=0, sticky='e', pady=self._pdy)
+        lab = tk.Label(self.frame_setts, text='Iterations:', bg=self.setts.bgColour, font=self.setts.mainFont)
+        lab.grid(row=3, column=0, sticky='e', pady=self._pdy)
+        lab = tk.Label(self.frame_setts, text='Polynomial Size:', bg=self.setts.bgColour, font=self.setts.mainFont)
+        lab.grid(row=4, column=0, sticky='e', pady=self._pdy)
+        lab = tk.Label(self.frame_setts, text='Gaussian Smoothing:', bg=self.setts.bgColour, font=self.setts.mainFont)
+        lab.grid(row=5, column=0, sticky='e', pady=self._pdy)
+        lab = tk.Label(self.frame_setts, text='Resample Size:', bg=self.setts.bgColour, font=self.setts.mainFont)
+        lab.grid(row=6, column=0, sticky='e', pady=self._pdy)
+
+        # Setting optical flow parameters for GUI interface - these will be used to set the parameters used by
+        # self.optiFlow, the OptiFlow() instance. The initial values are set to those initally used by OptiFlow()
+        self.pyr_scale_TKVAR = tk.DoubleVar()
+        self.pyr_scale_TKVAR.set(self.opti_inst.pyr_scale)
+        self.levels_TKVAR = tk.IntVar()
+        self.levels_TKVAR.set(self.opti_inst.levels)
+        self.winsize_TKVAR = tk.IntVar()
+        self.winsize_TKVAR.set(self.opti_inst.winsize)
+        self.iterations_TKVAR = tk.IntVar()
+        self.iterations_TKVAR.set(self.opti_inst.iterations)
+        self.poly_n_TKVAR = tk.IntVar()
+        self.poly_n_TKVAR.set(self.opti_inst.poly_n)
+        self.poly_sigma_TKVAR = tk.DoubleVar()
+        self.poly_sigma_TKVAR.set(self.opti_inst.poly_sigma)
+        self.resample_size_TKVAR = tk.DoubleVar()
+        self.resample_size_TKVAR.set(self.opti_inst.resample_size)
+
+        # Create entry boxes for paramters
+        self.pyr_scale_entry = tk.Entry(self.frame_setts, textvariable=self.pyr_scale_TKVAR, width=4,
+                                        font=self.setts.mainFont)
+        self.pyr_scale_entry.grid(row=0, column=1, sticky='w', pady=self._pdy, padx=self._pdx)
+        self.levels_entry = tk.Entry(self.frame_setts, textvariable=self.levels_TKVAR, width=4, font=self.setts.mainFont)
+        self.levels_entry.grid(row=1, column=1, sticky='w', pady=self._pdy, padx=self._pdx)
+        self.winsize_entry = tk.Entry(self.frame_setts, textvariable=self.winsize_TKVAR, width=4, font=self.setts.mainFont)
+        self.winsize_entry.grid(row=2, column=1, sticky='w', pady=self._pdy, padx=self._pdx)
+        self.iterations_entry = tk.Entry(self.frame_setts, textvariable=self.iterations_TKVAR, width=4,
+                                         font=self.setts.mainFont)
+        self.iterations_entry.grid(row=3, column=1, sticky='w', pady=self._pdy, padx=self._pdx)
+        self.poly_n_entry = tk.Entry(self.frame_setts, textvariable=self.poly_n_TKVAR, width=4, font=self.setts.mainFont)
+        self.poly_n_entry.grid(row=4, column=1, sticky='w', pady=self._pdy, padx=self._pdx)
+        self.poly_sigma_entry = tk.Entry(self.frame_setts, textvariable=self.poly_sigma_TKVAR, width=4,
+                                         font=self.setts.mainFont)
+        self.poly_sigma_entry.grid(row=5, column=1, sticky='w', pady=self._pdy, padx=self._pdx)
+        self.resample_size_entry = tk.Entry(self.frame_setts, textvariable=self.resample_size_TKVAR, width=4,
+                                            font=self.setts.mainFont)
+        self.resample_size_entry.grid(row=6, column=1, sticky='w', pady=self._pdy, padx=self._pdx)
+
+        update_butt = ttk.Button(self.frame_setts, text='Update parameters', command=self.__set_opti_settings__)
+        update_butt.grid(row=7, column=0, columnspan=2, sticky='nsew', pady=self._pdy, padx=self._pdx)
+
+        self.frame_setts.pack()
+
+        # Setup image plotting
+        self.__setup_plot__()
+
+    def __set_opti_settings__(self):
+        """Update the OptiFlow() instance to have the correct values as defined in the GUI"""
+        self.opti_inst.pyr_scale = self.pyr_scale_TKVAR.get()
+        self.opti_inst.levels = self.levels_TKVAR.get()
+        self.opti_inst.winsize = self.winsize_TKVAR.get()
+        self.opti_inst.iterations = self.iterations_TKVAR.get()
+        self.opti_inst.poly_n = self.poly_n_TKVAR.get()
+        self.opti_inst.poly_sigma = self.poly_sigma_TKVAR.get()
+        self.opti_inst.resample_size = self.resample_size_TKVAR.get()
+
+    def __setup_plot__(self):
+        """Setup optical flow plot"""
+        self.FigOptiImg = Figure(figsize=(7, 5))
+        self.AxOptiImg = self.FigOptiImg.add_subplot(111)
+        self.FigOptiImg.set_facecolor('black')
+        for child in self.AxOptiImg.get_children():
+            if isinstance(child, matplotlib.spines.Spine):
+                child.set_color('white')
+
+        self.AxOptiImg.set_xticks([])
+        self.AxOptiImg.set_yticks([])
+
+        self.img_canvas = FigureCanvasTkAgg(self.FigOptiImg, master=self.frame_img)
+        self.img_canvas.show()
+        self.img_canvas.get_tk_widget().pack()
+
+    def draw_optical_flow(self, current_image):
+        """Initial drawing of optical flow"""
+        # self.AxOptiImg.tick_params(axis='both', colors='white', direction='in', top='on', right='on')
+        self.vect_disp = self.AxOptiImg.quiver(self.opti_inst.x_shifts * self.opti_inst.vel_scalar,
+                                               -self.opti_inst.y_shifts * self.opti_inst.vel_scalar,
+                                                  units='xy', scale_units='xy', scale=1.5)
+        self.img_disp = self.AxOptiImg.imshow(current_image, extent=self.opti_inst.extent, cmap='gray')
+        self.AxOptiImg.set_xlim(self.opti_inst.extent[:2])
+        self.AxOptiImg.set_ylim(self.opti_inst.extent[2:])
+
+        self.flow_drawn = True
+
+    def update_optical_flow(self, current_image):
+        """Update optical flow plot optical flow"""
+        self.vect_disp.set_UVC(self.opti_inst.x_shifts * self.opti_inst.vel_scalar,
+                               -self.opti_inst.y_shifts * self.opti_inst.vel_scalar)#, units='xy', scale_units='xy', scale=1.5)
+        self.img_disp.set_data(current_image) #, extent=self.flow_extent)
+        # self.AxOptiImg.set_extent(self.flow_extent)
+        self.img_canvas.draw()
+        time.sleep(0.1)

@@ -12,6 +12,7 @@ from matplotlib.backends.backend_tkagg import FigureCanvasTkAgg, NavigationToolb
 from threading import Thread
 import queue
 import sys
+import cv2
 
 import numpy as np
 
@@ -19,6 +20,7 @@ from GUI_subs import *
 from post_process import process_data, ProcessInfo, remove_empty_scans, DataProcessor
 from LSP_control import ProcessLSP
 from data_handler import handle_data
+from process_video import VideoReader
 
 
 class MainGUI(ttk.Frame):
@@ -38,21 +40,25 @@ class MainGUI(ttk.Frame):
         self.lsp_proc = ProcessLSP()    # Has some useful processing algorithms for LSP data
         self._q = queue.Queue()         # Queue to retrieve data from thread
         self.processor = DataProcessor(self._q)  # Data processing class (not currently used)
+        self.opti_flow = OptiFlow()     # Optical flow processing instance
         # ----------------------------------------------------------------
         # Tab setup
         self.tabs = ttk.Notebook(self.parent)
         self.acqFrame = ttk.Frame(self.tabs)
         self.analysisFrame = ttk.Frame(self.tabs)
         self.frame3D = ttk.Frame(self.tabs)
+        self.optiflowFrame = ttk.Frame(self.tabs)
         self.tabs.add(self.acqFrame, text='Acquisition')
         self.tabs.add(self.analysisFrame, text='Analysis')
         self.tabs.add(self.frame3D, text='3D Analysis')
+        self.tabs.add(self.optiflowFrame, text='Optical Flow')
         self.tabs.pack(fill="both", expand=1)
 
         # Setup frames
         self.__acq_setup__(self.acqFrame)
         self.__analysis_setup__(self.analysisFrame)
         self.__3D_setup__(self.frame3D)
+        self.__opti_flow_setup__(self.optiflowFrame)
         # -----------------------------------------------------------------
 
         self.processor.mess_inst = self.messages
@@ -76,8 +82,6 @@ class MainGUI(ttk.Frame):
 
         self.lsp_config = LSPConfigGUI(frame, self.messages)
         self.lsp_config.frame.pack(side=tk.TOP)
-
-
 
     def __analysis_setup__(self, frame):
         """Setup analysis frame"""
@@ -194,6 +198,59 @@ class MainGUI(ttk.Frame):
         # 3D plot
         self.plt_3d = Plot3DGUI(frame)
         self.plt_3d.frame.pack(side=tk.TOP)
+
+    def __opti_flow_setup__(self, frame):
+        """Setup optical flow tab"""
+        # Add file selector for loading video
+        self.opti_vid_selector = FileSelector(frame, initdir='C:\\Users\\tw9616\\Documents\\PhD\\EE Placement\\Therm_Lidar Python\Data\\2018-03-21\\')
+        self.opti_vid_selector.frame.pack()
+
+        # Setup up option for number of frames to step when reading video
+        # (stepping individual frames can be too slow for optical flow)
+        frame_step_frame = tk.Frame(frame)
+        frame_step_frame.pack()
+        self.video_frame_step = tk.StringVar()
+        self.video_frame_step.set('10')
+        frame_step_lab = tk.Label(frame_step_frame, text='Video step (Frames):', font=self.setts.mainFont)
+        frame_step_lab.grid(row=0, column=0, sticky='e', padx=2, pady=2)
+        frame_step_entry = tk.Spinbox(frame_step_frame, textvariable=self.video_frame_step,
+                                      from_=1, to=100, increment=1, width=3)
+        frame_step_entry.grid(row=0, column=1, sticky='nsew', padx=2, pady=2)
+
+        # Add optical flow settings frame
+        self.opti_setts = OptiSetts(frame, self.setts, opti_inst=self.opti_flow)
+        self.opti_setts.frame.pack()
+
+        # Add process button
+        process_butt = ttk.Button(self.opti_setts.frame_setts, text='RUN OPTICAL FLOW', command=self.run_optical_flow)
+        process_butt.grid(row=7, column=0, columnspan=2, sticky='nsew',
+                          pady=self.opti_setts._pdy, padx=self.opti_setts._pdx)
+
+    def run_optical_flow(self):
+        """Iterate through image frames and calculate optical flow"""
+        self.video_reader = VideoReader(self.opti_vid_selector.filename)
+
+        self.opti_setts.AxOptiImg.clear()
+        self.opti_setts.flow_drawn = False
+        self.opti_setts.__set_opti_settings__()
+
+        self.video_reader.frame_step = int(self.video_frame_step.get())     # Set frame stepping increment
+
+        x = 0
+        while True:
+            self.video_reader.read_frame()
+            if self.video_reader.end_of_file:
+                break
+            if isinstance(self.video_reader.current_frame, np.ndarray):
+                self.opti_flow.compute_flow(self.video_reader.current_frame, self.video_reader.next_frame)
+                if self.opti_setts.flow_drawn:
+                    self.opti_setts.update_optical_flow(self.video_reader.current_frame)
+                else:
+                    self.opti_setts.draw_optical_flow(self.video_reader.current_frame)
+
+                filename = '{}_opti_flow_{}.txt'.format(self.opti_vid_selector.filename.split('.')[0], x)
+                # self.opti_flow.save_shifts(filename)
+                x += 1
 
     def handle_acquisition(self):
         """Starts LSP/lidar acquisition sequence"""
